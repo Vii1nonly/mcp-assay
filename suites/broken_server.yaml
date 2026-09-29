@@ -1,0 +1,55 @@
+name: broken-server-baseline
+server:
+  command: python
+  args: ["examples/broken_server.py"]
+
+tests:
+  - id: echo-happy-path
+    description: A valid call to a correctly implemented tool should succeed.
+    category: correctness
+    tool: echo
+    arguments:
+      text: hello
+    expect:
+      type: no_error
+
+  - id: read-file-happy-path
+    description: A valid read_file call should succeed.
+    category: correctness
+    tool: read_file
+    arguments:
+      path: README.md
+    expect:
+      type: no_error
+
+  - id: read-file-missing-required-arg
+    description: read_file declares `path` required, so omitting it must be rejected.
+    category: robustness
+    tool: read_file
+    arguments: {}
+    expect:
+      type: is_error
+
+  - id: echo-missing-required-arg
+    description: echo declares `text` required, so omitting it must be rejected.
+    category: robustness
+    tool: echo
+    arguments: {}
+    expect:
+      type: is_error
+
+  - id: get-status-matches-output-schema
+    description: get_status must return structured content matching its declared schema.
+    category: correctness
+    tool: get_status
+    arguments: {}
+    expect:
+      type: schema_valid
+      schema:
+        type: object
+        properties:
+          status:
+            type: string
+          uptime:
+            type: number
+        required: [status, uptime]

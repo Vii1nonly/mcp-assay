@@ -1,0 +1,105 @@
+# mcp-eval
+
+An eval and benchmark harness for [MCP](https://modelcontextprotocol.io) servers.
+
+MCP server adoption is growing quickly, but there is little tooling to test the
+servers themselves. `mcp-eval` connects to a server, runs a suite of test cases
+against it, and reports a scorecard: does the server validate its inputs, does it
+honour its own declared schemas, does it enforce its own boundaries.
+
+## Install
+
+```bash
+uv sync
+```
+
+## Use
+
+```bash
+# Run a suite
+uv run mcp-eval run suites/filesystem.yaml
+
+# Inspect a server's tools while writing a new suite
+uv run mcp-eval tools npx -- -y @modelcontextprotocol/server-filesystem .
+
+# Save the full scorecard, raw exchanges included
+uv run mcp-eval run suites/filesystem.yaml --json scorecard.json
+```
+
+The exit code is non-zero when any test fails, so it works in CI.
+
+## How it works
+
+Four objects flow through four stages. Each stage keeps the one before it, so
+any failure can be traced back to the exchange that produced it.
+
+```
+suite YAML  --load-->  TestCase
+                          |  executor + connector
+                          v
+                    ExecutionResult    what the server actually returned
+                          |  grader
+                          v
+                     GradedResult      pass/fail and why
+                          |  aggregate
+                          v
+                      Scorecard        totals by category, plus failures
+```
+
+| Module | Stage |
+| --- | --- |
+| `suite.py` | parses suite YAML into `TestCase` objects |
+| `connector.py` | spawns the server, speaks JSON-RPC over stdio |
+| `runner.py` | runs every case, then aggregates |
+| `graders.py` | decides pass or fail |
+| `report.py` | renders the scorecard |
+
+## Checks
+
+| Check | Passes when |
+| --- | --- |
+| `no_error` | the call completes and the server does not flag an error |
+| `is_error` | the server rejects the call, as it should for invalid input |
+| `schema_valid` | structured content validates against the supplied JSON Schema |
+
+`is_error` is the one that finds real bugs: a server that cheerfully accepts
+input its own schema declares invalid.
+
+## Suites are data
+
+Adding a test means editing YAML, not Python:
+
+```yaml
+- id: read-text-file-missing-required-arg
+  category: robustness
+  tool: read_text_file
+  arguments: {}
+  expect:
+    type: is_error
+```
+
+## Testing the harness itself
+
+`examples/broken_server.py` is a minimal MCP server with deliberate bugs: it
+declares `path` as required and then accepts calls without it, and it declares an
+output schema it then violates. Running the harness against it should produce
+failures. If it does not, the harness is broken.
+
+```bash
+uv run mcp-eval run suites/broken_server.yaml   # expect 2 failures
+```
+
+## Note on the MCP SDK
+
+The connector issues raw `tools/call` requests rather than using the SDK's
+`call_tool()` helper. The helper validates results against the server's declared
+output schema and raises before returning, which would stop the harness from ever
+observing a schema-violating payload. An eval tool has to see what the server
+actually sent and judge it itself.
+
+## Status
+
+v0.1: stdio transport, three check types, console and JSON reports.
+
+Planned: structural argument matching, fuzz suites, a security suite based on the
+[MCPSecBench](https://arxiv.org/abs/2508.13220) taxonomy, and HTTP transport.

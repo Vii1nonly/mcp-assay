@@ -1,0 +1,59 @@
+name: filesystem-server-baseline
+# The official reference server, run with the repo root as its only allowed directory.
+server:
+  command: npx
+  args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+
+tests:
+  - id: read-text-file-happy-path
+    description: Reading a file inside the allowed directory should succeed.
+    category: correctness
+    tool: read_text_file
+    arguments:
+      path: README.md
+    expect:
+      type: no_error
+
+  - id: list-directory-happy-path
+    description: Listing the allowed directory should succeed.
+    category: correctness
+    tool: list_directory
+    arguments:
+      path: .
+    expect:
+      type: no_error
+
+  - id: read-text-file-missing-required-arg
+    description: Omitting the required `path` argument must be rejected.
+    category: robustness
+    tool: read_text_file
+    arguments: {}
+    expect:
+      type: is_error
+
+  - id: read-text-file-nonexistent
+    description: Reading a file that does not exist must be reported as an error.
+    category: robustness
+    tool: read_text_file
+    arguments:
+      path: definitely-not-a-real-file.txt
+    expect:
+      type: is_error
+
+  - id: read-outside-allowed-directory
+    description: Escaping the sandbox with an absolute path must be refused.
+    category: security
+    tool: read_text_file
+    arguments:
+      path: C:\Windows\System32\drivers\etc\hosts
+    expect:
+      type: is_error
+
+  - id: read-traversal-escape
+    description: Escaping the sandbox with .. traversal must be refused.
+    category: security
+    tool: read_text_file
+    arguments:
+      path: ../../../Windows/System32/drivers/etc/hosts
+    expect:
+      type: is_error
