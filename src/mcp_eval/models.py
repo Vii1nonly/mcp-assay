@@ -11,7 +11,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 CheckType = Literal["no_error", "is_error", "schema_valid"]
-Verdict = Literal["pass", "fail"]
+# inconclusive: the harness never observed the server's answer, so it can
+# neither credit nor blame the server.
+Verdict = Literal["pass", "fail", "inconclusive"]
+# answered: a reply arrived (a result or a JSON-RPC error).
+# timeout: no reply before the deadline. transport_error: the session broke.
+Outcome = Literal["answered", "timeout", "transport_error"]
 
 
 class Expectation(BaseModel):
@@ -38,10 +43,13 @@ class ExecutionResult(BaseModel):
 
     test_case: TestCase
     latency_ms: float
-    # False when the call failed at the protocol level (McpError, timeout, crash).
-    completed: bool
+    outcome: Outcome
     # True when the server returned a result explicitly flagged as an error.
     is_error: bool = False
+    # Set when the server answered with a JSON-RPC error instead of a result.
+    rpc_error_code: int | None = None
+    # Set when a reply arrived but broke the result shape the protocol requires.
+    protocol_violation: str | None = None
     content: list[dict[str, Any]] = Field(default_factory=list)
     structured: dict[str, Any] | None = None
     error_message: str | None = None
@@ -67,8 +75,16 @@ class Scorecard(BaseModel):
         return sum(1 for r in self.results if r.verdict == "fail")
 
     @property
+    def inconclusive(self) -> int:
+        return sum(1 for r in self.results if r.verdict == "inconclusive")
+
+    @property
     def failures(self) -> list[GradedResult]:
         return [r for r in self.results if r.verdict == "fail"]
+
+    @property
+    def inconclusives(self) -> list[GradedResult]:
+        return [r for r in self.results if r.verdict == "inconclusive"]
 
     def by_category(self) -> dict[str, tuple[int, int]]:
         """category -> (passed, total)"""

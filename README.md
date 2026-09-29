@@ -26,7 +26,7 @@ uv run mcp-eval tools npx -- -y @modelcontextprotocol/server-filesystem .
 uv run mcp-eval run suites/filesystem.yaml --json scorecard.json
 ```
 
-The exit code is non-zero when any test fails, so it works in CI.
+The exit code is non-zero when any test fails or is inconclusive, so it works in CI.
 
 ## How it works
 
@@ -59,8 +59,15 @@ suite YAML  --load-->  TestCase
 | Check | Passes when |
 | --- | --- |
 | `no_error` | the call completes and the server does not flag an error |
-| `is_error` | the server rejects the call, as it should for invalid input |
+| `is_error` | the server rejects the call, as it should for invalid input — with an error result or a JSON-RPC error reply. Parse error, invalid request and method not found (-32700, -32600, -32601) do not count: the server never evaluated the input |
 | `schema_valid` | structured content validates against the supplied JSON Schema |
+
+Every check returns **inconclusive** instead when the harness never observed the
+server's answer: the call timed out or the connection broke. A timeout is not a
+rejection, so a server that hangs on bad input is never credited with refusing it.
+
+A reply that arrives but breaks the protocol's result shape is observed, and
+every check grades it **fail**.
 
 `is_error` is the one that finds real bugs: a server that cheerfully accepts
 input its own schema declares invalid.

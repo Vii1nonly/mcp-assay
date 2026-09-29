@@ -5,6 +5,8 @@ from rich.table import Table
 
 from .models import Scorecard
 
+VERDICT_STYLE = {"pass": "green", "fail": "red", "inconclusive": "yellow"}
+
 
 def print_scorecard(scorecard: Scorecard, console: Console | None = None) -> None:
     console = console or Console()
@@ -18,7 +20,7 @@ def print_scorecard(scorecard: Scorecard, console: Console | None = None) -> Non
 
     for result in scorecard.results:
         test_case = result.execution.test_case
-        style = "green" if result.verdict == "pass" else "red"
+        style = VERDICT_STYLE[result.verdict]
         table.add_row(
             test_case.id,
             test_case.category,
@@ -37,8 +39,21 @@ def print_scorecard(scorecard: Scorecard, console: Console | None = None) -> Non
         for result in scorecard.failures:
             console.print(f"  [red]x[/red] {result.execution.test_case.id}: {result.reason}")
 
+    if scorecard.inconclusives:
+        console.print("\n[bold yellow]Inconclusive[/bold yellow] (server's answer not observed)")
+        for result in scorecard.inconclusives:
+            console.print(f"  [yellow]?[/yellow] {result.execution.test_case.id}: {result.reason}")
+
     total = len(scorecard.results)
-    color = "green" if scorecard.failed == 0 else "red"
-    console.print(f"\n[{color}]{scorecard.passed}/{total} passed[/{color}]")
+    if scorecard.failed:
+        color = "red"
+    elif scorecard.inconclusive:
+        color = "yellow"
+    else:
+        color = "green"
+    console.print(
+        f"\n[{color}]{scorecard.passed}/{total} passed, {scorecard.failed} failed, "
+        f"{scorecard.inconclusive} inconclusive[/{color}]"
+    )
     if scorecard.protocol_version:
         console.print(f"[dim]protocol version: {scorecard.protocol_version}[/dim]")

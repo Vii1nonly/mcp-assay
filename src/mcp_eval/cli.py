@@ -37,7 +37,7 @@ def run(
         json_out.write_text(scorecard.model_dump_json(indent=2), encoding="utf-8")
         console.print(f"[dim]wrote {json_out}[/dim]")
 
-    raise typer.Exit(code=1 if scorecard.failed else 0)
+    raise typer.Exit(code=1 if scorecard.failed or scorecard.inconclusive else 0)
 
 
 @app.command()

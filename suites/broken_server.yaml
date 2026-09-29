@@ -38,6 +38,22 @@ tests:
     expect:
       type: is_error
 
+  - id: strict-echo-missing-required-arg
+    description: A standard JSON-RPC error reply (-32602) is a real rejection and must pass.
+    category: robustness
+    tool: strict_echo
+    arguments: {}
+    expect:
+      type: is_error
+
+  - id: hang-responds-in-time
+    description: A tool that stalls past the timeout is never a pass; its answer was not observed.
+    category: robustness
+    tool: hang
+    arguments: {}
+    expect:
+      type: no_error
+
   - id: get-status-matches-output-schema
     description: get_status must return structured content matching its declared schema.
     category: correctness

@@ -8,10 +8,22 @@ import asyncio
 from contextlib import asynccontextmanager
 from time import perf_counter
 
-from mcp import ClientSession, StdioServerParameters, types
+from mcp import ClientSession, MCPError, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
+from pydantic import ValidationError
 
 from .models import ExecutionResult, TestCase
+
+# The SDK raises MCPError both for a real JSON-RPC error reply and for its own
+# local failures, which it reports with these codes. A server may legitimately
+# send the same codes, so an error carrying one cannot be attributed to the
+# server and is never treated as the server answering.
+# REQUEST_TIMEOUT (-32001) is absent on purpose: the SDK only raises it when a
+# read timeout is armed, and this harness never arms one (asyncio.wait_for does
+# the timing). Add it back here if an SDK read timeout is ever configured.
+_SDK_LOCAL_CODES = {
+    types.CONNECTION_CLOSED: "transport_error",
+}
 
 
 @asynccontextmanager
@@ -45,8 +57,35 @@ async def run_test_case(
         return ExecutionResult(
             test_case=test_case,
             latency_ms=(perf_counter() - start) * 1000,
-            completed=False,
+            outcome="timeout",
             error_message=f"timed out after {timeout}s",
+        )
+    except MCPError as exc:
+        latency_ms = (perf_counter() - start) * 1000
+        local = _SDK_LOCAL_CODES.get(exc.code)
+        if local:
+            return ExecutionResult(
+                test_case=test_case,
+                latency_ms=latency_ms,
+                outcome=local,
+                error_message=f"{exc.message} (code {exc.code}; not attributable to the server)",
+            )
+        return ExecutionResult(
+            test_case=test_case,
+            latency_ms=latency_ms,
+            outcome="answered",
+            rpc_error_code=exc.code,
+            error_message=exc.message,
+        )
+    except ValidationError as exc:
+        # send_request validates the result only after the matching reply has
+        # arrived, so this is an observed answer that broke the protocol shape.
+        return ExecutionResult(
+            test_case=test_case,
+            latency_ms=(perf_counter() - start) * 1000,
+            outcome="answered",
+            protocol_violation=str(exc).splitlines()[0],
+            error_message=str(exc),
         )
     except Exception as exc:  # noqa: BLE001
         # Blind catch is deliberate: a server under test may fail in any way,
@@ -54,7 +93,7 @@ async def run_test_case(
         return ExecutionResult(
             test_case=test_case,
             latency_ms=(perf_counter() - start) * 1000,
-            completed=False,
+            outcome="transport_error",
             error_message=f"{type(exc).__name__}: {exc}",
         )
 
@@ -62,7 +101,7 @@ async def run_test_case(
     return ExecutionResult(
         test_case=test_case,
         latency_ms=latency_ms,
-        completed=True,
+        outcome="answered",
         is_error=result.is_error,
         content=[block.model_dump(mode="json", exclude_none=True) for block in result.content],
         structured=result.structured_content,
