@@ -1,11 +1,12 @@
 # mcp-eval
 
-An eval and benchmark harness for [MCP](https://modelcontextprotocol.io) servers.
+A reliability eval harness for [MCP](https://modelcontextprotocol.io) servers, the
+tool servers that AI agents depend on to read files, query data and take actions.
 
-MCP server adoption is growing quickly, but there is little tooling to test the
-servers themselves. `mcp-eval` connects to a server, runs a suite of test cases
-against it, and reports a scorecard: does the server validate its inputs, does it
-honour its own declared schemas, does it enforce its own boundaries.
+An agent that calls a tool trusts the server to reject bad input, return what its
+schema promises, and stay inside its boundaries. `mcp-eval` checks those promises.
+It starts a server, runs a suite of valid and deliberately invalid calls against
+it, and reports a scorecard with a verdict and a reason for every test.
 
 ## Install
 
@@ -106,7 +107,19 @@ actually sent and judge it itself.
 
 ## Status
 
-v0.1: stdio transport, three check types, console and JSON reports.
+v0.1: stdio transport, three check types, pass / fail / inconclusive verdicts,
+console and JSON reports.
 
-Planned: structural argument matching, fuzz suites, a security suite based on the
-[MCPSecBench](https://arxiv.org/abs/2508.13220) taxonomy, and HTTP transport.
+Known limitation: with a short `--timeout`, a test that stalls the server can make the next test grade inconclusive, because that test's request waits behind the stalled one. The fix is designed in [docs/adr/0001-recovery-after-timeout.md](docs/adr/0001-recovery-after-timeout.md) and not yet built.
+
+Roadmap:
+
+- **Recovery:** restart a stalled or crashed server so one bad test cannot affect
+  the next (the ADR above).
+- **Server checks:** structural argument matching, fuzz suites, a security suite
+  based on the [MCPSecBench](https://arxiv.org/abs/2508.13220) taxonomy, and HTTP
+  transport.
+- **Agent task suites:** run an agent through multi-step tasks against real
+  servers and grade whether the task was completed, not only single calls.
+- **Cost tracking:** record the time each run takes and, for agent suites, the
+  model tokens it uses, so reliability can be weighed against cost.
