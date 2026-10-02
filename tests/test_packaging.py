@@ -1,15 +1,19 @@
 """The declared SDK range must match the SDK the code is written against."""
 
-from importlib.metadata import requires
+import tomllib
+from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
 
+PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
+
 
 def _mcp_requirement() -> Requirement:
-    # Read the installed project's metadata: the same requirement pip and uv resolve.
-    reqs = [Requirement(r) for r in requires("mcp-eval")]
-    [mcp] = [r for r in reqs if r.name == "mcp"]
+    # Read the source pip and uv build metadata from, not the installed copy,
+    # which goes stale when pyproject.toml changes without a re-sync.
+    deps = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["dependencies"]
+    [mcp] = [r for r in map(Requirement, deps) if r.name == "mcp"]
     return mcp
 
 
