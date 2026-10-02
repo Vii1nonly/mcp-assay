@@ -1,5 +1,5 @@
 [project]
-name = "mcp-eval"
+name = "mcp-assay"
 version = "0.1.0"
 description = "An eval and benchmark harness for MCP servers"
 license = "MIT"
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mcp-eval = "mcp_eval.cli:app"
+mcp-assay = "mcp_assay.cli:app"
 
 [dependency-groups]
 dev = [

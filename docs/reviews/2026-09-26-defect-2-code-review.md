@@ -1,4 +1,5 @@
 # Code Review: Defect 2 Fix (`is_error` false pass)
+Note: the tool was renamed from mcp-eval to mcp-assay on 2026-10-02; paths below refer to src/mcp_eval/.
 
 - **Date:** 2026-09-26
 - **Process:** Multi-agent code review (`/ce-code-review`) of the uncommitted defect 2 changes, checking for false passes and that each change stays in its stage

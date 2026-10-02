@@ -11,7 +11,7 @@ VERDICT_STYLE = {"pass": "green", "fail": "red", "inconclusive": "yellow"}
 def print_scorecard(scorecard: Scorecard, console: Console | None = None) -> None:
     console = console or Console()
 
-    table = Table(title=f"MCP eval: {scorecard.server_label}")
+    table = Table(title=f"mcp-assay: {scorecard.server_label}")
     table.add_column("test")
     table.add_column("category")
     table.add_column("check")

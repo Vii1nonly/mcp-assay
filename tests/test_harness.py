@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from mcp_eval.models import ExecutionResult, TestCase
-from mcp_eval.runner import run_suite
-from mcp_eval.suite import Suite, load_suite
+from mcp_assay.models import ExecutionResult, TestCase
+from mcp_assay.runner import run_suite
+from mcp_assay.suite import Suite, load_suite
 
 SUITE = Path(__file__).parent.parent / "suites" / "broken_server.yaml"
 
@@ -119,14 +119,14 @@ def _case(check: str) -> TestCase:
 
 
 def test_is_error_fails_when_server_accepts_bad_input():
-    from mcp_eval.graders import grade
+    from mcp_assay.graders import grade
 
     execution = _execution(test_case=_case("is_error"), is_error=False)
     assert grade(execution).verdict == "fail"
 
 
 def test_timeout_under_no_error_is_inconclusive():
-    from mcp_eval.graders import grade
+    from mcp_assay.graders import grade
 
     execution = _execution(outcome="timeout", error_message="timed out after 10.0s")
     assert grade(execution).verdict == "inconclusive"
@@ -135,7 +135,7 @@ def test_timeout_under_no_error_is_inconclusive():
 @pytest.mark.parametrize("check", ["no_error", "is_error", "schema_valid"])
 @pytest.mark.parametrize("outcome", ["timeout", "transport_error"])
 def test_unobserved_answer_is_inconclusive_for_every_check(check, outcome):
-    from mcp_eval.graders import grade
+    from mcp_assay.graders import grade
 
     execution = _execution(test_case=_case(check), outcome=outcome, error_message="x")
     assert grade(execution).verdict == "inconclusive"
@@ -146,7 +146,7 @@ def test_unobserved_answer_is_inconclusive_for_every_check(check, outcome):
     [("is_error", "pass"), ("no_error", "fail"), ("schema_valid", "fail")],
 )
 def test_json_rpc_error_reply_is_a_server_rejection(check, expected):
-    from mcp_eval.graders import grade
+    from mcp_assay.graders import grade
 
     execution = _execution(
         test_case=_case(check), rpc_error_code=-32602, error_message="Invalid params"

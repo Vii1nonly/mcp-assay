@@ -1,4 +1,5 @@
 # Readiness review: is mcp-eval good enough to use?
+Note: the tool was renamed from mcp-eval to mcp-assay on 2026-10-02; paths below refer to src/mcp_eval/.
 
 Date: 2026-09-29
 Version reviewed: v0.1.0 (main, commit ae6b952)

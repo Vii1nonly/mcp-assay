@@ -1,4 +1,4 @@
-# mcp-eval
+# mcp-assay
 
 An eval harness for MCP servers: start a server, send it a suite of test cases
 (valid and deliberately invalid), judge the replies, print a scorecard.
@@ -10,14 +10,14 @@ in this repo. Treat any such case as a correctness bug, not a nitpick.
 ## Layout
 
 ```
-src/mcp_eval/
+src/mcp_assay/
   models.py     the four objects: TestCase -> ExecutionResult -> GradedResult -> Scorecard
   suite.py      loads suite YAML into TestCase objects
   connector.py  the ONLY module that touches the MCP protocol
   runner.py     runs each test through the connector, then grades it
   graders.py    one function per check type, dispatched via CHECKS
   report.py     renders the scorecard
-  cli.py        typer entrypoint (`mcp-eval run`, `mcp-eval tools`)
+  cli.py        typer entrypoint (`mcp-assay run`, `mcp-assay tools`)
 suites/         test suites as YAML data
 examples/       broken_server.py — a deliberately careless server used as a baseline
 tests/          pytest suite for the harness itself
@@ -56,7 +56,7 @@ I am learning this codebase as I build it, and I review every section myself.
 
 ## Known open issue: a timeout spoils the next test
 
-Reproduce: `uv run mcp-eval run suites/broken_server.yaml --timeout 2` (`hang`
+Reproduce: `uv run mcp-assay run suites/broken_server.yaml --timeout 2` (`hang`
 sleeps 5s, so the default 10s timeout hides it).
 
 - **Defect 2 (false passes): fixed.** Each result records `outcome`; an unobserved
@@ -73,9 +73,9 @@ Requires Python 3.12+ (`requires-python = ">=3.12"`, per ADR 0001).
 
 ```bash
 uv sync                                          # install
-uv run mcp-eval run suites/broken_server.yaml    # run a suite (exit code 1 if any fail)
-uv run mcp-eval run suites/filesystem.yaml --json scorecard.json
-uv run mcp-eval tools npx -- -y @modelcontextprotocol/server-filesystem .
+uv run mcp-assay run suites/broken_server.yaml   # run a suite (exit code 1 if any fail)
+uv run mcp-assay run suites/filesystem.yaml --json scorecard.json
+uv run mcp-assay tools npx -- -y @modelcontextprotocol/server-filesystem .
 uv run pytest                                    # harness's own tests
 uv run ruff check . && uv run ruff format --check .
 ```

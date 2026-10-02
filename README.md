@@ -1,10 +1,10 @@
-# mcp-eval
+# mcp-assay
 
 A reliability eval harness for [MCP](https://modelcontextprotocol.io) servers, the
 tool servers that AI agents depend on to read files, query data and take actions.
 
 An agent that calls a tool trusts the server to reject bad input, return what its
-schema promises, and stay inside its boundaries. `mcp-eval` checks those promises.
+schema promises, and stay inside its boundaries. `mcp-assay` checks those promises.
 It starts a server, runs a suite of valid and deliberately invalid calls against
 it, and reports a scorecard with a verdict and a reason for every test.
 
@@ -18,13 +18,13 @@ uv sync
 
 ```bash
 # Run a suite
-uv run mcp-eval run suites/filesystem.yaml
+uv run mcp-assay run suites/filesystem.yaml
 
 # Inspect a server's tools while writing a new suite
-uv run mcp-eval tools npx -- -y @modelcontextprotocol/server-filesystem .
+uv run mcp-assay tools npx -- -y @modelcontextprotocol/server-filesystem .
 
 # Save the full scorecard, raw exchanges included
-uv run mcp-eval run suites/filesystem.yaml --json scorecard.json
+uv run mcp-assay run suites/filesystem.yaml --json scorecard.json
 ```
 
 The exit code is non-zero when any test fails or is inconclusive, so it works in CI.
@@ -94,7 +94,7 @@ output schema it then violates. Running the harness against it should produce
 failures. If it does not, the harness is broken.
 
 ```bash
-uv run mcp-eval run suites/broken_server.yaml   # expect 2 failures
+uv run mcp-assay run suites/broken_server.yaml   # expect 2 failures
 ```
 
 ## Note on the MCP SDK
