@@ -5,7 +5,7 @@ description = "An eval and benchmark harness for MCP servers"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
-    "mcp>=1.2.0",
+    "mcp>=2.2,<3",
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "jsonschema>=4.0",
