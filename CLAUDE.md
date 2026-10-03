@@ -65,7 +65,11 @@ sleeps 5s, so the default 10s timeout hides it).
   `docs/adr/0001-recovery-after-timeout.md` (accepted), not yet implemented.** Follow
   that ADR; ask me before deviating from it.
 - **Still open:** an `is_error` test with an unknown tool name passes (needs a
-  `tools/list` preflight; ask first).
+  `tools/list` preflight; ask first). So does one with a misspelled argument name
+  (`pth:` for `path:`): the server rejects the call for the missing argument and the
+  rejection is credited. YAML-converted values (unquoted yes/no/on/off/y/n, dates) are
+  now refused when the suite loads. The v0.1.2 preflight must still check each test's
+  argument names, and value types, against that tool's `inputSchema`.
 
 ## Commands
 
