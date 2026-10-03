@@ -7,7 +7,7 @@ from rich.console import Console
 
 from .report import print_scorecard
 from .runner import run_suite
-from .suite import ServerSpec, load_suite
+from .suite import ServerSpec, SuiteError, load_suite
 
 app = typer.Typer(help="Evaluate MCP servers against a suite of test cases.")
 console = Console()
@@ -21,7 +21,13 @@ def run(
     timeout: float = typer.Option(10.0, help="Per-call timeout in seconds."),
     json_out: Path = typer.Option(None, "--json", help="Write the full scorecard here."),
 ):
-    suite = load_suite(suite_path)
+    try:
+        suite = load_suite(suite_path)
+    except SuiteError as e:
+        # Exit 2: the suite could not be evaluated. Exit 1 stays "a test failed".
+        # Plain echo, not rich, so a long message stays on one line.
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=2) from None
 
     if command:
         server = ServerSpec(command=command, args=args or [])

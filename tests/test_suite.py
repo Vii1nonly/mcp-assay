@@ -1,0 +1,470 @@
+"""A malformed suite must be refused at load, with one line naming the file and
+the spot. A silently dropped key turns a suite mistake into a verdict."""
+
+import textwrap
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from mcp_assay.cli import app
+from mcp_assay.suite import SuiteError, load_suite
+
+REPO = Path(__file__).parent.parent
+SUITES = REPO / "suites"
+
+
+def _write(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "suite.yaml"
+    path.write_text(textwrap.dedent(text).lstrip("\n"), encoding="utf-8")
+    return path
+
+
+def _load_error(path: Path) -> str:
+    with pytest.raises(SuiteError) as excinfo:
+        load_suite(path)
+    message = str(excinfo.value)
+    assert "\n" not in message
+    assert str(path) in message
+    return message
+
+
+def test_misspelled_arguments_key_is_refused(tmp_path):
+    # The readiness review's false pass: `args` was dropped, `{}` was sent, and
+    # the server's rejection of the empty call was credited under is_error.
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - id: ok
+            tool: echo
+            expect: {type: no_error}
+          - id: read-file-missing-path
+            tool: read_file
+            args: {}
+            expect: {type: is_error}
+        """,
+    )
+    message = _load_error(path)
+    assert "tests[1] (id 'read-file-missing-path'): unknown key 'args'" in message
+    assert "did you mean 'arguments'?" in message
+
+
+def test_unknown_server_key_is_refused(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        server: {command: python, env: {A: "1"}}
+        tests:
+          - {id: a, tool: echo, expect: {type: no_error}}
+        """,
+    )
+    assert "server: unknown key 'env'" in _load_error(path)
+
+
+def test_misspelled_top_level_key_is_reported_before_the_missing_one(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        test:
+          - {id: a, tool: echo, expect: {type: no_error}}
+        """,
+    )
+    message = _load_error(path)
+    assert "(top level): unknown key 'test' (did you mean 'tests'?) (+1 more)" in message
+
+
+def test_schema_at_test_level_points_under_expect(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - id: a
+            tool: get_status
+            schema: {type: object}
+            expect: {type: schema_valid}
+        """,
+    )
+    assert "unknown key 'schema' (belongs under expect:)" in _load_error(path)
+
+
+def test_json_schema_spelling_is_refused(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - id: a
+            tool: get_status
+            expect: {type: schema_valid, json_schema: {type: object}}
+        """,
+    )
+    message = _load_error(path)
+    assert "tests[0] (id 'a'): expect: unknown key 'json_schema'" in message
+    assert "did you mean 'schema'?" in message
+
+
+def test_repeated_key_is_refused_with_its_position(tmp_path):
+    # YAML keeps only the last of two equal keys, which drops the first silently.
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - id: a
+            tool: read_file
+            arguments: {path: README.md}
+            arguments: {}
+            expect: {type: is_error}
+        """,
+    )
+    assert "line 6, column 5: duplicate key 'arguments'" in _load_error(path)
+
+
+def test_merge_override_is_not_a_repeated_key(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - id: a
+            tool: read_file
+            arguments: &shared {path: README.md, mode: text}
+            expect: {type: no_error}
+          - id: b
+            tool: read_file
+            arguments: {<<: *shared, path: other.md}
+            expect: {type: no_error}
+        """,
+    )
+    suite = load_suite(path)
+    assert suite.tests[1].arguments == {"path": "other.md", "mode": "text"}
+
+
+def test_test_entry_that_is_not_a_mapping_is_refused(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - foo
+        """,
+    )
+    message = _load_error(path)
+    assert "tests[0]: expected a mapping" in message
+    assert "(id" not in message
+
+
+def test_non_string_id_is_located_by_index_only(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - {id: 7, tool: echo, expect: {type: no_error}}
+        """,
+    )
+    message = _load_error(path)
+    assert "tests[0]: id:" in message
+    assert "(id" not in message
+
+
+def test_empty_file_is_refused(tmp_path):
+    path = _write(tmp_path, "")
+    assert "(top level): suite file must be a mapping" in _load_error(path)
+
+
+def test_broken_yaml_is_refused_with_its_position(tmp_path):
+    path = _write(tmp_path, "name: [s\n")
+    message = _load_error(path)
+    assert "line " in message
+    assert "column " in message
+
+
+def test_missing_suite_file_is_refused(tmp_path):
+    assert "cannot read suite file" in _load_error(tmp_path / "missing.yaml")
+
+
+def test_several_problems_report_the_first_and_a_count(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - {id: a, tool: echo, expect: {type: no_error}, args: {}, tol: x, desc: z}
+        """,
+    )
+    assert "unknown key 'args' (did you mean 'arguments'?) (+2 more)" in _load_error(path)
+
+
+@pytest.mark.parametrize(("name", "count"), [("broken_server.yaml", 7), ("filesystem.yaml", 6)])
+def test_shipped_suites_still_load(name, count):
+    assert len(load_suite(SUITES / name).tests) == count
+
+
+def _one_test(tmp_path: Path, expect: str, extra: str = "") -> Path:
+    return _write(
+        tmp_path,
+        f"""
+        name: s
+        tests:
+          - id: a
+            tool: get_status
+            expect: {expect}
+        {extra}
+        """,
+    )
+
+
+def test_schema_valid_without_schema_is_refused(tmp_path):
+    path = _one_test(tmp_path, "{type: schema_valid}")
+    assert "tests[0] (id 'a'): expect.schema: required by schema_valid" in _load_error(path)
+
+
+def test_schema_on_another_check_is_refused(tmp_path):
+    # The author believes the schema is being checked; is_error never reads it.
+    path = _one_test(tmp_path, "{type: is_error, schema: {type: object}}")
+    assert "tests[0] (id 'a'): expect.schema: only schema_valid uses a schema" in _load_error(path)
+
+
+def test_duplicate_id_is_refused_at_the_second_use(tmp_path):
+    path = _one_test(
+        tmp_path, "{type: no_error}", "  - {id: a, tool: echo, expect: {type: no_error}}"
+    )
+    assert "tests[1] (id 'a'): id: 'a' is already used by tests[0]" in _load_error(path)
+
+
+def test_suite_without_tests_is_refused(tmp_path):
+    path = _write(tmp_path, "name: s\ntests: []\n")
+    assert "tests: suite has no tests" in _load_error(path)
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        ("{type: strng}", "expect.schema.type: 'strng' is not valid"),
+        ("{properties: {x: {pattern: '('}}}", "expect.schema.properties.x.pattern:"),
+        ("{$ref: '#/nope'}", "expect.schema.$ref: '#/nope' does not resolve"),
+        (
+            "{$ref: 'http://example.com/x'}",
+            "expect.schema.$ref: 'http://example.com/x' is not local",
+        ),
+        ("{required: [a], properties: {x: {$ref: '#/required'}}}", "does not point to a schema"),
+        ("{$dynamicRef: '#/nope'}", "expect.schema.$dynamicRef: '#/nope' does not resolve"),
+        (
+            "{allOf: [{type: string}], properties: {x: {$ref: '#/allOf/x'}}}",
+            "expect.schema.properties.x.$ref: '#/allOf/x' does not resolve",
+        ),
+        ("{prefixItems: [{}], properties: {x: {$ref: '#/prefixItems/-'}}}", "does not resolve"),
+        ("{minimum: 1, properties: {x: {$ref: '#/minimum/x'}}}", "does not resolve"),
+        ("&s {anyOf: [{type: string}, *s]}", "refers to itself through a YAML anchor"),
+        # A keyword map is not a schema; grading would read its names as unknown keywords.
+        ("{$defs: {s: {}}, properties: {x: {$ref: '#/$defs'}}}", "does not point to a schema"),
+        ("{properties: {x: {$ref: '#/properties'}}}", "does not point to a schema"),
+        # YAML reads `200` as an int; the grader never sees that property name.
+        ("{properties: {200: {type: string}}}", "key 200 is not a string"),
+    ],
+)
+def test_broken_schema_is_refused(tmp_path, schema, expected):
+    # Each of these used to load and then crash grading after the server had answered.
+    path = _one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}")
+    message = _load_error(path)
+    assert "tests[0] (id 'a'): " in message
+    assert expected in message
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        "{$defs: {s: {type: string}}, properties: {x: {$ref: '#/$defs/s'}}}",
+        "{properties: {child: {$ref: '#'}}}",
+        # Data positions hold values, not schemas, so a `$ref` key there is not a reference.
+        "{const: {$ref: 'http://example.com/x'}}",
+        "{enum: [{$ref: '#/nope'}]}",
+        "{default: {$ref: '#/nope'}}",
+        "{examples: [{$ref: '#/nope'}]}",
+        # An anchor used twice is shared, not self-referring.
+        "{$defs: {s: &s {type: string}}, properties: {x: *s, y: *s}}",
+    ],
+)
+def test_valid_local_refs_still_load(tmp_path, schema):
+    path = _one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}")
+    assert load_suite(path).tests[0].expect.json_schema is not None
+
+
+def test_several_rule_problems_report_the_first_in_test_order(tmp_path):
+    path = _one_test(
+        tmp_path,
+        "{type: schema_valid, schema: {type: strng}}",
+        "  - {id: a, tool: echo, expect: {type: no_error}}",
+    )
+    message = _load_error(path)
+    assert "tests[0] (id 'a'): expect.schema.type:" in message
+    assert message.endswith("(+1 more)")
+
+
+def _run_cli(*args: str):
+    return CliRunner().invoke(app, ["run", *args])
+
+
+def test_cli_refuses_a_bad_suite_before_starting_the_server(tmp_path):
+    # The server command does not exist, so if loading let this suite through,
+    # starting the server would fail with a different exit code.
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        server: {command: definitely-not-a-real-command}
+        tests:
+          - {id: a, tool: read_file, args: {}, expect: {type: is_error}}
+        """,
+    )
+    result = _run_cli(str(path))
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    [line] = result.stderr.splitlines()
+    assert str(path) in line
+    assert "unknown key 'args'" in line
+
+
+def test_cli_refuses_a_missing_suite_file(tmp_path):
+    result = _run_cli(str(tmp_path / "missing.yaml"))
+    assert result.exit_code == 2
+    [line] = result.stderr.splitlines()
+    assert "cannot read suite file" in line
+
+
+def test_cli_still_exits_1_when_a_test_fails(tmp_path):
+    # Exit 2 is new; exit 1 keeps meaning that a test failed or was inconclusive.
+    path = _write(
+        tmp_path,
+        f"""
+        name: s
+        server:
+          command: python
+          args: [examples/broken_server.py]
+          cwd: '{REPO.as_posix()}'
+        tests:
+          - {{id: a, tool: read_file, arguments: {{}}, expect: {{type: is_error}}}}
+        """,
+    )
+    result = _run_cli(str(path))
+    assert result.exit_code == 1, result.output
+    assert "1 failed" in result.stdout
+
+
+# A misspelled schema keyword: the grader ignores keywords it does not know, so
+# the check it was meant to add silently checks nothing and the test passes.
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        (
+            "{type: object, requird: [status]}",
+            "expect.schema: unknown keyword 'requird' (did you mean 'required'?)",
+        ),
+        ("{propertis: {status: {type: string}}}", "did you mean 'properties'?"),
+        (
+            "{properties: {n: {minimun: 1}}}",
+            "expect.schema.properties.n: unknown keyword 'minimun' (did you mean 'minimum'?)",
+        ),
+        # The draft-07 spelling: the grader's 2020-12 draft ignores it.
+        ("{dependencies: {a: [b]}}", "unknown keyword 'dependencies'"),
+    ],
+)
+def test_unknown_schema_keyword_is_refused(tmp_path, schema, expected):
+    path = _one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}")
+    message = _load_error(path)
+    assert "tests[0] (id 'a'): " in message
+    assert expected in message
+
+
+def test_known_schema_keywords_still_load(tmp_path):
+    schema = (
+        "{title: t, description: d, $comment: c, if: {required: [a]}, then: {required: [b]},"
+        " else: {required: [c]}, properties: {e: {type: string, format: email, examples: [x]}}}"
+    )
+    path = _one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}")
+    assert load_suite(path).tests[0].expect.json_schema["then"] == {"required": ["b"]}
+
+
+# YAML 1.1 reads unquoted yes/no/on/off as booleans and dates as date objects, so
+# the value sent or checked is not the text the author wrote.
+@pytest.mark.parametrize("word", ["on", "no", "Yes", "OFF", "y", "N"])
+def test_unquoted_boolean_word_is_refused(tmp_path, word):
+    path = _write(
+        tmp_path,
+        f"""
+        name: s
+        tests:
+          - id: a
+            tool: echo
+            arguments: {{text: {word}}}
+            expect: {{type: no_error}}
+        """,
+    )
+    assert f"line 5, column 23: unquoted '{word}'" in _load_error(path)
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        # `on` became True, so the `if` never matched and `then` was never enforced.
+        ("{if: {properties: {mode: {const: on}}}, then: {required: [x]}}", "unquoted 'on'"),
+        ("{properties: {on: {type: boolean}}}", "unquoted 'on'"),
+        # A date object never equals the JSON string, so `not` always held.
+        ("{properties: {d: {not: {const: 2024-01-01}}}}", "unquoted '2024-01-01'"),
+    ],
+)
+def test_yaml_converted_schema_value_is_refused(tmp_path, schema, expected):
+    path = _one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}")
+    message = _load_error(path)
+    assert "line 5, column " in message
+    assert expected in message
+
+
+def test_quoted_words_and_plain_y_keys_still_load(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - id: a
+            tool: echo
+            arguments: {mode: 'on', flag: "no", day: '2024-01-01', y: 1}
+            expect: {type: schema_valid, schema: {properties: {"on": {}, y: {type: number}}}}
+        """,
+    )
+    test = load_suite(path).tests[0]
+    assert test.arguments == {"mode": "on", "flag": "no", "day": "2024-01-01", "y": 1}
+    assert set(test.expect.json_schema["properties"]) == {"on", "y"}
+
+
+# A value YAML cannot build used to escape as a traceback with exit 1.
+def test_unbuildable_yaml_value_is_refused_with_its_position(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - {id: !!int abc, tool: echo, expect: {type: no_error}}
+        """,
+    )
+    assert "line 3, column 10: invalid value:" in _load_error(path)
+
+
+def test_cli_refuses_an_impossible_date_with_exit_2(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: 2024-13-45
+        tests: []
+        """,
+    )
+    result = _run_cli(str(path))
+    assert result.exit_code == 2
+    [line] = result.stderr.splitlines()
+    assert "line 1, column 7:" in line

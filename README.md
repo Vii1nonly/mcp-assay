@@ -27,7 +27,7 @@ uv run mcp-assay tools npx -- -y @modelcontextprotocol/server-filesystem .
 uv run mcp-assay run suites/filesystem.yaml --json scorecard.json
 ```
 
-The exit code is non-zero when any test fails or is inconclusive, so it works in CI.
+The exit code is non-zero when any test fails or is inconclusive, so it works in CI. It is 1 for a failed or inconclusive test and 2 for a suite that cannot be read.
 
 ## How it works
 
@@ -85,6 +85,8 @@ Adding a test means editing YAML, not Python:
   expect:
     type: is_error
 ```
+
+The suite's own keys and schemas are checked strictly when it loads. A misspelled key, a misplaced `schema`, a duplicate id or a broken schema stops the run before the server starts, with one line naming the file and the spot. Argument names and values inside `arguments` are passed through as written: only the server checks them.
 
 ## Testing the harness itself
 

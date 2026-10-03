@@ -22,7 +22,8 @@ Outcome = Literal["answered", "timeout", "transport_error"]
 class Expectation(BaseModel):
     """What "correct" means for one test case."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    # Suites are written by hand: an unknown key is a mistake, not something to drop.
+    model_config = ConfigDict(extra="forbid")
 
     type: CheckType
     # Only used by schema_valid: the JSON Schema the result must satisfy.
@@ -30,6 +31,8 @@ class Expectation(BaseModel):
 
 
 class TestCase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     tool: str
     expect: Expectation
