@@ -27,7 +27,9 @@ uv run mcp-assay tools npx -- -y @modelcontextprotocol/server-filesystem .
 uv run mcp-assay run suites/filesystem.yaml --json scorecard.json
 ```
 
-The exit code is non-zero when any test fails or is inconclusive, so it works in CI. It is 1 for a failed or inconclusive test and 2 for a suite that cannot be read.
+The exit code is non-zero when any test fails or is inconclusive, so it works in CI. It is 1 for a failed or inconclusive test. It is 2 for a suite that cannot be read, a `--json` path that cannot be written, or a scorecard that cannot be displayed; the verdicts are kept wherever they could be delivered.
+
+If the harness itself fails while grading a test, that test alone is reported as an inconclusive harness error, in its own section, with a warning that counts the affected tests. This is a harness bug, not a server result.
 
 ## How it works
 

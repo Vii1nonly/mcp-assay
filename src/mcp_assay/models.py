@@ -62,6 +62,9 @@ class GradedResult(BaseModel):
     execution: ExecutionResult
     verdict: Verdict
     reason: str
+    # True when the harness itself failed while grading; the verdict is then
+    # inconclusive and says nothing about the server.
+    harness_error: bool = False
 
 
 class Scorecard(BaseModel):
@@ -88,6 +91,10 @@ class Scorecard(BaseModel):
     @property
     def inconclusives(self) -> list[GradedResult]:
         return [r for r in self.results if r.verdict == "inconclusive"]
+
+    @property
+    def harness_errors(self) -> list[GradedResult]:
+        return [r for r in self.results if r.harness_error]
 
     def by_category(self) -> dict[str, tuple[int, int]]:
         """category -> (passed, total)"""

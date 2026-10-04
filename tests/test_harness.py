@@ -152,3 +152,80 @@ def test_json_rpc_error_reply_is_a_server_rejection(check, expected):
         test_case=_case(check), rpc_error_code=-32602, error_message="Invalid params"
     )
     assert grade(execution).verdict == expected
+
+
+# A schema that refers to itself makes jsonschema recurse until RecursionError.
+# That is a harness failure, not a server verdict: only the test it hit is lost.
+_SELF_REF = {"type": "schema_valid", "schema": {"$ref": "#"}}
+
+
+@pytest.mark.asyncio
+async def test_grading_crash_affects_only_its_own_test():
+    server = load_suite(SUITE).server
+    suite = Suite(
+        name="grading-crash",
+        server=server,
+        tests=[
+            TestCase(id="self-ref", tool="get_status", expect=_SELF_REF),
+            TestCase(id="echo", tool="echo", arguments={"text": "hi"}, expect={"type": "no_error"}),
+        ],
+    )
+    scorecard = await run_suite(suite, server)
+
+    results = {r.execution.test_case.id: r for r in scorecard.results}
+    crashed = results["self-ref"]
+    assert crashed.verdict == "inconclusive"
+    assert crashed.harness_error is True
+    assert crashed.reason.startswith("harness error while grading: RecursionError")
+    assert results["echo"].verdict == "pass"
+    assert results["echo"].harness_error is False
+    assert scorecard.harness_errors == [crashed]
+
+
+def test_grade_guard_turns_an_exception_into_a_harness_error():
+    from mcp_assay.runner import grade_safely
+
+    execution = _execution(
+        test_case=TestCase(id="t", tool="x", expect=_SELF_REF), structured={"a": 1}
+    )
+    result = grade_safely(execution)
+    assert result.verdict == "inconclusive"
+    assert result.harness_error is True
+    # CPython may add a suffix to the message, so only its start is fixed.
+    assert result.reason.startswith(
+        "harness error while grading: RecursionError: maximum recursion depth exceeded"
+    )
+
+
+def test_ordinary_grade_is_not_a_harness_error():
+    from mcp_assay.runner import grade_safely
+
+    result = grade_safely(_execution())
+    assert result.verdict == "pass"
+    assert result.harness_error is False
+    assert '"harness_error":false' in result.model_dump_json()
+
+
+def test_harness_error_without_a_message_names_only_the_exception(monkeypatch):
+    # Fault injection: no real grader exception with an empty message is known.
+    import mcp_assay.runner
+
+    def raise_bare_error(execution):
+        raise KeyError()
+
+    monkeypatch.setattr(mcp_assay.runner, "grade", raise_bare_error)
+    result = mcp_assay.runner.grade_safely(_execution())
+    assert result.reason == "harness error while grading: KeyError"
+
+
+def test_ctrl_c_while_grading_still_stops_the_run(monkeypatch):
+    # The guard catches Exception, not BaseException, so an interrupt is not
+    # turned into a harness error. Fault injection: Ctrl+C cannot be sent here.
+    import mcp_assay.runner
+
+    def interrupted(execution):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(mcp_assay.runner, "grade", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        mcp_assay.runner.grade_safely(_execution())
