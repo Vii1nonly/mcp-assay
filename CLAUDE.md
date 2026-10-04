@@ -70,6 +70,9 @@ sleeps 5s, so the default 10s timeout hides it).
   rejection is credited. YAML-converted values (unquoted yes/no/on/off/y/n, dates) are
   now refused when the suite loads. The v0.1.2 preflight must still check each test's
   argument names, and value types, against that tool's `inputSchema`.
+- **Follow-up for N4:** a self-referencing schema such as `{$ref: '#'}` loads, then makes
+  the grader recurse until `RecursionError`. N3 reports that as an inconclusive harness
+  error; N4 could refuse such a schema when the suite loads.
 
 ## Commands
 
