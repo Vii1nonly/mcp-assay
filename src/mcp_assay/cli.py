@@ -5,7 +5,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
-from rich.markup import escape
+from rich.text import Text
 
 from .report import print_scorecard
 from .runner import run_suite
@@ -83,7 +83,7 @@ def run(
     try:
         print_scorecard(scorecard, console)
         if json_out and not output_failed:
-            console.print(f"[dim]wrote {escape(str(json_out))}[/dim]")
+            console.print(Text(f"wrote {json_out}", style="dim"))
     # Whatever breaks the display, the verdicts are already in the JSON when asked for.
     except Exception as e:  # noqa: BLE001
         first_line = str(e).strip().splitlines()[0] if str(e).strip() else ""
@@ -111,8 +111,21 @@ def tools(
 
     result = asyncio.run(_list())
     for tool in result.tools:
-        console.print(f"[bold]{tool.name}[/bold]  {tool.description or ''}")
-        console.print(json.dumps(tool.input_schema, indent=2))
+        typer.echo(_describe_tool(tool))
+
+
+def _describe_tool(tool) -> str:
+    """A tool as plain text, exactly as the server declared it.
+
+    Printed with typer.echo, not rich: authors copy these schemas into suites,
+    so markup (a regex like ^[a-z0-9]+$ losing [a-z0-9]), emoji codes and
+    soft-wrapping inside a JSON line would all change what they copy.
+    """
+    lines = [f"{tool.name}  {tool.description or ''}".rstrip()]
+    lines += ["input schema:", json.dumps(tool.input_schema, indent=2)]
+    if tool.output_schema is not None:
+        lines += ["output schema:", json.dumps(tool.output_schema, indent=2)]
+    return "\n".join(lines) + "\n"
 
 
 if __name__ == "__main__":

@@ -97,3 +97,49 @@ def test_markup_in_every_printed_field_is_printed_literally():
         "[/x]v",
     ):
         assert literal in text
+
+
+# N5: every verdict shows its reason, passes included, so a server that
+# rejects everything is visible from the console.
+def test_passes_are_listed_with_their_reasons():
+    results = [
+        _result("denied", "pass", 'server returned an error as expected: "Access denied"'),
+        _result("broken", "fail", "server accepted input it should have rejected"),
+    ]
+    passed = _section(_render(results), "Passed")
+    assert 'denied: server returned an error as expected: "Access denied"' in passed
+    assert "broken" not in passed
+
+
+def test_markup_in_a_pass_reason_is_printed_literally():
+    text = _render([_result("[/x]id", "pass", 'quoted "[/x]" text')])
+    assert "[/x]id" in text
+    assert 'quoted "[/x]" text' in text
+
+
+def test_emoji_codes_in_server_text_are_printed_literally():
+    # rich turns ":id:" or ":x:" into emoji unless the text is passed literally.
+    results = [
+        _result("ok:id:", "pass", 'quoted "user:id: must be int"', category="c:x:"),
+        _result("bad:x:", "fail", 'quoted ":warning: no"'),
+        _result("slow:x:", "inconclusive", "timed out :x:", outcome="timeout"),
+        _result("crash:x:", "inconclusive", "harness :x:", harness_error=True),
+    ]
+    text = _render(results, label="python :x: server.py", protocol_version="v:x:")
+    for literal in (
+        "ok:id:",
+        "c:x:",
+        '"user:id: must be int"',
+        "bad:x:",
+        '":warning: no"',
+        "timed out :x:",
+        "harness :x:",
+        "python :x: server.py",
+        "v:x:",
+    ):
+        assert literal in text
+
+
+def test_no_passed_section_without_passes():
+    text = _render([_result("broken", "fail", "server accepted input it should have rejected")])
+    assert "Passed" not in text

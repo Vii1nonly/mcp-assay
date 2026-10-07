@@ -323,3 +323,103 @@ def test_2020_12_ref_sibling_is_enforced():
     schema = {"$defs": {"o": {"type": "object"}}, "$ref": "#/$defs/o", "required": ["status"]}
     result = grade(_execution(test_case=_schema_case(schema), structured={}))
     assert result.verdict == "fail"
+
+
+# N5: a reason quotes the server's own message, so a reader can tell a real
+# rejection from an unrelated error without opening the JSON.
+def _text(*texts):
+    return [{"type": "text", "text": t} for t in texts]
+
+
+def _reason(check, **kwargs):
+    from mcp_assay.graders import grade
+
+    return grade(_execution(test_case=_case(check), **kwargs))
+
+
+def test_json_rpc_rejection_reason_quotes_the_server_message():
+    result = _reason("is_error", rpc_error_code=-32602, error_message="Invalid params")
+    assert result.verdict == "pass"
+    assert result.reason == 'server rejected the call with JSON-RPC error -32602: "Invalid params"'
+
+
+def test_is_error_result_reason_quotes_the_server_text():
+    result = _reason("is_error", is_error=True, content=_text("Access denied - outside root"))
+    assert result.verdict == "pass"
+    assert result.reason == 'server returned an error as expected: "Access denied - outside root"'
+
+
+def test_accepted_input_reason_quotes_what_the_server_returned():
+    result = _reason("is_error", content=_text("contents of <no path given>"))
+    assert result.verdict == "fail"
+    assert result.reason == (
+        'server accepted input it should have rejected: "contents of <no path given>"'
+    )
+
+
+def test_no_error_failures_quote_the_server_text():
+    flagged = _reason("no_error", is_error=True, content=_text("disk full"))
+    assert flagged.verdict == "fail"
+    assert flagged.reason == 'server returned an error, expected success: "disk full"'
+    rpc = _reason("no_error", rpc_error_code=-32602, error_message="bad args")
+    assert rpc.verdict == "fail"
+    assert rpc.reason == 'server returned JSON-RPC error -32602: "bad args", expected success'
+
+
+def test_schema_valid_fail_on_an_error_result_quotes_the_server_text():
+    result = _reason("schema_valid", is_error=True, content=_text("boom"))
+    assert result.verdict == "fail"
+    assert result.reason == 'server flagged the result as an error (isError: true): "boom"'
+
+
+def test_no_error_pass_reason_quotes_nothing():
+    result = _reason("no_error", content=_text("hello"))
+    assert result.verdict == "pass"
+    assert result.reason == "completed without error"
+
+
+def test_quoted_text_is_one_clean_line():
+    from mcp_assay.graders import _quote
+
+    assert _quote("a\n\n\tb   c") == '"a b c"'
+    # ESC (a terminal escape) and a zero-width space are dropped.
+    assert _quote("\x1b[31mred​") == '"[31mred"'
+    long = _quote("x" * 300)
+    assert len(long) == 122
+    assert long.endswith('..."')
+    assert _quote(" \n\x00 ") is None
+
+
+def test_every_json_rpc_reason_quotes_the_server_message():
+    not_evaluated = _reason("is_error", rpc_error_code=-32601, error_message="Method not found")
+    assert not_evaluated.reason == (
+        'server did not evaluate the input (JSON-RPC error -32601: "Method not found")'
+    )
+    broke = _reason("is_error", rpc_error_code=-32603, error_message="Internal error")
+    assert broke.reason == (
+        'server broke instead of rejecting the input (JSON-RPC error -32603: "Internal error")'
+    )
+    schema = _reason("schema_valid", rpc_error_code=-32602, error_message="bad args")
+    assert schema.reason == 'server returned JSON-RPC error -32602: "bad args" instead of a result'
+
+
+def test_json_rpc_reason_without_a_message_has_no_empty_quote():
+    for message in (None, "", "\x1b"):
+        result = _reason("is_error", rpc_error_code=-32602, error_message=message)
+        assert result.reason == "server rejected the call with JSON-RPC error -32602"
+
+
+def test_server_text_joins_the_text_blocks_only():
+    content = [
+        {"type": "text", "text": "first"},
+        {"type": "image", "data": "", "mimeType": "image/png"},
+        {"type": "text", "text": "second"},
+    ]
+    result = _reason("is_error", is_error=True, content=content)
+    assert result.reason == 'server returned an error as expected: "first second"'
+
+
+def test_reply_without_text_keeps_the_plain_reason():
+    image = [{"type": "image", "data": "", "mimeType": "image/png"}]
+    result = _reason("is_error", is_error=True, content=image)
+    assert result.reason == "server returned an error as expected"

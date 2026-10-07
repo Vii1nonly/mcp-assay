@@ -187,3 +187,47 @@ def test_unserialisable_scorecard_still_shows_every_verdict(tmp_path):
     assert "status" in result.stdout
     [line] = [text for text in result.stderr.splitlines() if "cannot write the scorecard" in text]
     assert str(out) in line
+
+
+# N5: `tools` output is copied into suites, so it must be the server's text as-is.
+def _tool(**fields):
+    from mcp import types
+
+    return types.Tool.model_validate({"name": "read", "inputSchema": {"type": "object"}, **fields})
+
+
+def test_tool_text_is_printed_literally():
+    from mcp_assay.cli import _describe_tool
+
+    tool = _tool(
+        description="match [a-z]+ or [/x] :x:",
+        inputSchema={"type": "object", "properties": {"p": {"pattern": "^[a-z0-9]+$"}}},
+    )
+    text = _describe_tool(tool)
+    assert "match [a-z]+ or [/x] :x:" in text
+    assert '"pattern": "^[a-z0-9]+$"' in text
+    assert "output schema:" not in text
+
+
+def test_declared_output_schema_is_printed():
+    from mcp_assay.cli import _describe_tool
+
+    text = _describe_tool(_tool(outputSchema={"type": "object", "required": ["status"]}))
+    assert "output schema:" in text
+    assert '"status"' in text.split("output schema:", 1)[1]
+
+
+def test_long_schema_lines_are_not_wrapped():
+    from mcp_assay.cli import _describe_tool
+
+    pattern = "^" + "[a-z]" * 30 + "$"
+    text = _describe_tool(_tool(inputSchema={"type": "string", "pattern": pattern}))
+    assert f'  "pattern": "{pattern}"' in text.splitlines()
+
+
+def test_tools_lists_a_real_server_with_its_output_schema():
+    server = str(REPO / "examples" / "broken_server.py")
+    result = CliRunner().invoke(app, ["tools", sys.executable, server])
+    assert result.exit_code == 0, result.output
+    after_status = result.stdout.split("get_status", 1)[1]
+    assert "output schema:" in after_status.split("\n\n", 1)[0]
