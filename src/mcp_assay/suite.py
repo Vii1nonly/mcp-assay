@@ -9,23 +9,21 @@ import difflib
 from pathlib import Path
 
 import yaml
-from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from referencing import Registry
 from referencing.exceptions import Unresolvable
-from referencing.jsonschema import DRAFT202012
+from referencing.jsonschema import UnknownDialect
 
+from . import schemas
 from .models import Expectation, TestCase
 
-# Every keyword the grader's draft (2020-12) acts on or defines, plus annotations it
-# allows. The grader ignores any other key, so a misspelled keyword would check nothing.
-# N4 will honour `$schema`; this list must then follow the draft each schema declares.
-_SCHEMA_KEYWORDS = frozenset(Draft202012Validator.VALIDATORS) | {
-    "then", "else", "$schema", "$id", "$anchor", "$dynamicAnchor", "$defs", "definitions",
-    "$comment", "$vocabulary", "title", "description", "default", "examples", "deprecated",
-    "readOnly", "writeOnly", "contentEncoding", "contentMediaType", "contentSchema",
-}  # fmt: skip
+# Keywords evaluated against the same data as the schema holding them. A cycle made only
+# of these never steps into a property or item, so grading would recurse forever.
+_IN_PLACE_LISTS = ("allOf", "anyOf", "oneOf")
+_IN_PLACE_SCHEMAS = ("not", "if", "then", "else")
+_IN_PLACE_MAPS = ("dependentSchemas", "dependencies")
+_REF_KEYWORDS = ("$ref", "$dynamicRef", "$recursiveRef")
 
 
 class SuiteError(Exception):
@@ -100,36 +98,157 @@ def _schema_problems(schema) -> list[tuple[tuple, str]]:
     shape = _shape_problem(schema)
     if shape:
         return [shape]
-    # Same validator class as the grader, so a schema that loads is one it can use.
+    # The schema's own draft, as the grader will use it, so a schema that loads is
+    # graded under the same rules.
     try:
-        Draft202012Validator.check_schema(schema)
+        cls = schemas.validator_class(schema)
+    except schemas.DialectError as e:
+        return [(("$schema",), str(e))]
+    try:
+        cls.check_schema(schema)
     except SchemaError as e:
         return [(tuple(e.path), _first_line(e.message))]
-    root = DRAFT202012.create_resource(schema)
-    resolver = Registry().with_resource("", root).resolver()
-    subschemas = _subschemas(root)
+    try:
+        root = schemas.specification(cls).create_resource(schema)
+        resolvers = _resolvers(root)
+    except UnknownDialect:
+        return [((), "only the root schema may declare $schema")]
+    subschemas = set(resolvers)
+    allowed = schemas.keywords(cls)
+    checkable = schemas.format_names(cls)
+    draft = schemas.draft_name(cls)
     problems = []
     for at, node in _schema_dicts(schema, subschemas):
         for key in node:
-            if key not in _SCHEMA_KEYWORDS:
-                close = difflib.get_close_matches(key, sorted(_SCHEMA_KEYWORDS), n=1)
-                hint = f" (did you mean '{close[0]}'?)" if close else ""
-                problems.append((at, f"unknown keyword '{key}'{hint}"))
-    for at, keyword, ref in _refs(schema, subschemas):
+            if key not in allowed:
+                problems.append((at, _unknown_keyword(key, cls, allowed)))
+        for key in schemas.ignored_beside_ref(node, cls):
+            # Grading never evaluates it, so whatever it asserts would silently pass.
+            hint = "move it into allOf with the $ref"
+            problems.append(((*at, key), f"is ignored next to $ref in {draft} ({hint})"))
+        for key, reason in schemas.unevaluated(node, cls):
+            problems.append(((*at, key), reason))
+        if at and "$schema" in node:
+            problems.append(((*at, "$schema"), "only the root schema may declare $schema"))
+        fmt = node.get("format")
+        if isinstance(fmt, str) and fmt not in checkable:
+            problems.append(((*at, "format"), _unchecked_format(fmt, cls, checkable)))
+    for at, node, keyword, ref in _refs(schema, subschemas):
         where = (*at, keyword)
-        if not ref.startswith("#"):
-            # Grading would try to fetch it from the network.
-            problems.append((where, f"'{ref}' is not local to this schema"))
-            continue
         try:
-            target = resolver.lookup(ref).contents
+            # Resolved from the resource enclosing this schema, as grading resolves it.
+            target = resolvers[id(node)].lookup(ref).contents
         except (Unresolvable, ValueError, TypeError):
             # ValueError: a non-number step into a list; TypeError: a step into a number.
-            problems.append((where, f"'{ref}' does not resolve"))
+            if ref.startswith("#"):
+                problems.append((where, f"'{ref}' does not resolve"))
+            else:
+                # Not found in this schema: grading would try to fetch it from the network.
+                problems.append((where, f"'{ref}' is not local to this schema"))
             continue
         if id(target) not in subschemas:
             problems.append((where, f"'{ref}' does not point to a schema"))
+    if not problems:
+        loop = _loop(schema, subschemas, resolvers, cls)
+        if loop is not None:
+            problems.append((loop, "loops back to itself without checking any data"))
     return problems
+
+
+def _resolvers(root) -> dict:
+    """A resolver for every schema in the document, keyed by object id.
+
+    Each one is scoped to the resource enclosing that schema, so a reference inside a
+    subschema with its own `$id` resolves against that subschema, as grading does.
+    """
+    base = root.id() or ""
+    registry = Registry().with_resource(base, root).crawl()
+    found = {}
+
+    def walk(resource, resolver):
+        if id(resource.contents) in found:
+            return
+        found[id(resource.contents)] = resolver
+        for sub in resource.subresources():
+            walk(sub, resolver.in_subresource(sub))
+
+    walk(root, registry.resolver(base_uri=base))
+    return found
+
+
+def _unknown_keyword(key: str, cls: type, allowed: frozenset[str]) -> str:
+    other = schemas.other_draft(key, cls)
+    if other is None:
+        close = difflib.get_close_matches(key, sorted(allowed), n=1)
+        hint = f" (did you mean '{close[0]}'?)" if close else ""
+        return f"unknown keyword '{key}'{hint}"
+    instead = schemas.replacement(key, cls)
+    alternative = f", or use {instead}" if instead else ""
+    return (
+        f"'{key}' is not used by {schemas.draft_name(cls)} "
+        f"(declare $schema for {schemas.draft_name(other)}{alternative})"
+    )
+
+
+def _unchecked_format(fmt: str, cls: type, checkable: frozenset[str]) -> str:
+    close = difflib.get_close_matches(fmt, sorted(checkable), n=1)
+    hint = f" (did you mean '{close[0]}'?)" if close else ""
+    return f"'{fmt}' is not a format mcp-assay can check under {schemas.draft_name(cls)}{hint}"
+
+
+def _in_place(node: dict, cls: type, resolver):
+    """Each schema evaluated against the same data as `node`, with the keyword path to it."""
+    acted_on = schemas.keywords(cls)
+    for keyword in _REF_KEYWORDS:
+        if keyword in acted_on and isinstance(node.get(keyword), str):
+            try:
+                yield (keyword,), resolver.lookup(node[keyword]).contents
+            except (Unresolvable, ValueError, TypeError):
+                continue  # already reported as unresolvable
+    if schemas.ref_overrides_siblings(cls) and "$ref" in node:
+        return
+    for keyword in _IN_PLACE_LISTS:
+        if keyword in acted_on and isinstance(node.get(keyword), list):
+            for i, child in enumerate(node[keyword]):
+                yield (keyword, i), child
+    for keyword in _IN_PLACE_SCHEMAS:
+        # `then` and `else` are only evaluated alongside an `if`.
+        needs_if = keyword in ("then", "else") and "if" not in node
+        if keyword in acted_on and keyword in node and not needs_if:
+            yield (keyword,), node[keyword]
+    for keyword in _IN_PLACE_MAPS:
+        if keyword in acted_on and isinstance(node.get(keyword), dict):
+            for name, child in node[keyword].items():
+                yield (keyword, name), child
+
+
+def _loop(schema, subschemas, resolvers: dict, cls: type) -> tuple | None:
+    """The path to the reference that closes a cycle of in-place keywords, if any."""
+    paths = {}
+    for at, node in _schema_dicts(schema, subschemas):
+        paths.setdefault(id(node), at)
+    visiting, done = set(), set()
+
+    def visit(node: dict) -> tuple | None:
+        visiting.add(id(node))
+        for step, child in _in_place(node, cls, resolvers[id(node)]):
+            if not isinstance(child, dict) or id(child) in done:
+                continue
+            if id(child) in visiting:
+                return (*paths.get(id(node), ()), *step)
+            found = visit(child)
+            if found is not None:
+                return found
+        visiting.discard(id(node))
+        done.add(id(node))
+        return None
+
+    for _, node in _schema_dicts(schema, subschemas):
+        if id(node) not in done:
+            found = visit(node)
+            if found is not None:
+                return found
+    return None
 
 
 def _shape_problem(node, at=(), enclosing=None) -> tuple[tuple, str] | None:
@@ -154,16 +273,6 @@ def _shape_problem(node, at=(), enclosing=None) -> tuple[tuple, str] | None:
     return None
 
 
-def _subschemas(resource, found=None) -> set[int]:
-    """The id of every object the grader treats as a schema, as referencing walks them."""
-    found = set() if found is None else found
-    if id(resource.contents) not in found:
-        found.add(id(resource.contents))
-        for sub in resource.subresources():
-            _subschemas(sub, found)
-    return found
-
-
 def _schema_dicts(node, subschemas, at=()):
     """Every object the grader treats as a schema, with its path; data in const/enum is skipped."""
     if isinstance(node, dict):
@@ -177,11 +286,11 @@ def _schema_dicts(node, subschemas, at=()):
 
 
 def _refs(node, subschemas):
-    """Every `$ref` and `$dynamicRef` held by a schema, with the path to that schema."""
+    """Every reference keyword held by a schema, with the path to that schema and the schema."""
     for at, schema in _schema_dicts(node, subschemas):
-        for keyword in ("$ref", "$dynamicRef"):
+        for keyword in _REF_KEYWORDS:
             if isinstance(schema.get(keyword), str):
-                yield at, keyword, schema[keyword]
+                yield at, schema, keyword, schema[keyword]
 
 
 def _refusal(path: Path, problems: list[str]) -> SuiteError:
@@ -201,6 +310,12 @@ class _StrictLoader(yaml.SafeLoader):
         except (ValueError, TypeError, OverflowError) as e:
             raise yaml.constructor.ConstructorError(
                 None, None, f"invalid value: {_first_line(str(e))}", node.start_mark
+            ) from None
+        except KeyError:
+            # `!!bool maybe`: PyYAML looks the word up in a table and raises KeyError.
+            tag = node.tag.rsplit(":", 1)[-1]
+            raise yaml.constructor.ConstructorError(
+                None, None, f"!!{tag} cannot read '{node.value}'", node.start_mark
             ) from None
 
 

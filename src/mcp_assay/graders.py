@@ -8,8 +8,7 @@ A check may only credit or blame the server for an answer the harness actually
 observed. When no answer was observed, every check returns inconclusive.
 """
 
-from jsonschema import Draft202012Validator
-
+from . import schemas
 from .models import ExecutionResult, GradedResult
 
 
@@ -29,6 +28,8 @@ def _unobserved(execution: ExecutionResult):
 # JSON-RPC codes meaning the request never reached argument evaluation:
 # parse error, invalid request, method not found.
 _INPUT_NOT_EVALUATED = {-32700, -32600, -32601}
+# Internal error: the server broke, which says nothing about whether it validated the input.
+_INTERNAL_ERROR = -32603
 
 
 def _rpc_error(execution: ExecutionResult) -> str:
@@ -64,6 +65,8 @@ def _is_error(execution: ExecutionResult):
         return _malformed(execution)
     if execution.rpc_error_code in _INPUT_NOT_EVALUATED:
         return "fail", f"server did not evaluate the input ({_rpc_error(execution)})"
+    if execution.rpc_error_code == _INTERNAL_ERROR:
+        return "fail", f"server broke instead of rejecting the input ({_rpc_error(execution)})"
     if execution.rpc_error_code is not None:
         return "pass", f"server rejected the call with {_rpc_error(execution)}"
     if execution.is_error:
@@ -81,14 +84,15 @@ def _schema_valid(execution: ExecutionResult):
         return _malformed(execution)
     if execution.rpc_error_code is not None:
         return "fail", f"server returned {_rpc_error(execution)} instead of a result"
+    if execution.is_error:
+        return "fail", "server flagged the result as an error (isError: true)"
 
     payload = execution.structured
     if payload is None:
         return "fail", "server returned no structured content to validate"
 
-    errors = sorted(
-        Draft202012Validator(expected_schema).iter_errors(payload), key=lambda e: e.path
-    )
+    # The schema's own draft, with format checking on: the rules it was loaded under.
+    errors = sorted(schemas.validator(expected_schema).iter_errors(payload), key=lambda e: e.path)
     if errors:
         first = errors[0]
         location = "/".join(str(p) for p in first.path) or "(root)"

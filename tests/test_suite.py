@@ -371,8 +371,8 @@ def test_cli_still_exits_1_when_a_test_fails(tmp_path):
             "{properties: {n: {minimun: 1}}}",
             "expect.schema.properties.n: unknown keyword 'minimun' (did you mean 'minimum'?)",
         ),
-        # The draft-07 spelling: the grader's 2020-12 draft ignores it.
-        ("{dependencies: {a: [b]}}", "unknown keyword 'dependencies'"),
+        # The draft-07 spelling: the default 2020-12 draft ignores it.
+        ("{dependencies: {a: [b]}}", "'dependencies' is not used by draft 2020-12"),
     ],
 )
 def test_unknown_schema_keyword_is_refused(tmp_path, schema, expected):
@@ -468,3 +468,273 @@ def test_cli_refuses_an_impossible_date_with_exit_2(tmp_path):
     assert result.exit_code == 2
     [line] = result.stderr.splitlines()
     assert "line 1, column 7:" in line
+
+
+# --- N4: the schema's own draft decides what loads ----------------------------
+
+_DRAFT_07 = "'http://json-schema.org/draft-07/schema#'"
+
+
+@pytest.mark.parametrize("keyword", ["minContains", "maxContains"])
+def test_contains_bounds_load(tmp_path, keyword):
+    schema = f"{{type: array, contains: {{type: string}}, {keyword}: 2}}"
+    load_suite(_one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}"))
+
+
+def test_declared_draft_07_keyword_loads(tmp_path):
+    schema = f"{{$schema: {_DRAFT_07}, dependencies: {{a: [b]}}}}"
+    load_suite(_one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}"))
+
+
+def test_keyword_of_another_draft_is_refused_with_a_hint(tmp_path):
+    path = _one_test(tmp_path, "{type: schema_valid, schema: {dependencies: {a: [b]}}}")
+    message = _load_error(path)
+    assert "expect.schema: 'dependencies' is not used by draft 2020-12" in message
+    assert "draft-07" in message
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("'http://json-schema.org/draft-03/schema#'", "is not supported"),
+        ("'https://example.com/schema'", "is not a JSON Schema draft"),
+        ("5", "$schema must be a string"),
+    ],
+)
+def test_unusable_schema_dialect_is_refused(tmp_path, value, expected):
+    path = _one_test(tmp_path, f"{{type: schema_valid, schema: {{$schema: {value}}}}}")
+    message = _load_error(path)
+    assert "expect.schema.$schema:" in message
+    assert expected in message
+
+
+def test_schema_dialect_below_the_root_is_refused(tmp_path):
+    schema = f"{{properties: {{a: {{$schema: {_DRAFT_07}}}}}}}"
+    path = _one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}")
+    assert "only the root schema may declare $schema" in _load_error(path)
+
+
+def test_misspelled_format_is_refused(tmp_path):
+    path = _one_test(tmp_path, "{type: schema_valid, schema: {type: string, format: emial}}")
+    message = _load_error(path)
+    assert "expect.schema.format: 'emial' is not a format mcp-assay can check" in message
+    assert "(did you mean 'email'?)" in message
+
+
+def test_custom_format_is_refused(tmp_path):
+    # An unchecked format would make the test pass whatever the value is.
+    path = _one_test(tmp_path, "{type: schema_valid, schema: {format: semver}}")
+    assert "'semver' is not a format mcp-assay can check" in _load_error(path)
+
+
+def test_format_the_declared_draft_cannot_check_is_refused(tmp_path):
+    schema = "{$schema: 'http://json-schema.org/draft-04/schema#', format: uuid}"
+    path = _one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}")
+    assert "'uuid' is not a format mcp-assay can check under draft-04" in _load_error(path)
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        "{$ref: '#'}",
+        "{allOf: [{$ref: '#'}]}",
+        "{$defs: {a: {$ref: '#/$defs/b'}, b: {anyOf: [{$ref: '#/$defs/a'}]}}, $ref: '#/$defs/a'}",
+    ],
+)
+def test_schema_that_loops_without_consuming_data_is_refused(tmp_path, schema):
+    # The grader would recurse until RecursionError (N3 records that as a harness error).
+    path = _one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}")
+    assert "loops back to itself without checking any data" in _load_error(path)
+
+
+def test_recursive_tree_schema_loads(tmp_path):
+    # Recursion through a property consumes data on every step, so it ends.
+    schema = "{type: object, properties: {child: {$ref: '#'}}}"
+    load_suite(_one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}"))
+
+
+def test_draft_07_ref_sibling_is_refused_not_mistaken_for_a_loop(tmp_path):
+    # In draft-07 a $ref ignores its siblings: the allOf is dead, not a loop.
+    schema = (
+        f"{{$schema: {_DRAFT_07}, definitions: {{a: {{type: string}}}}, "
+        "$ref: '#/definitions/a', allOf: [{$ref: '#'}]}"
+    )
+    message = _load_error(_one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}"))
+    assert "expect.schema.allOf: is ignored next to $ref in draft-07" in message
+    assert "loops back" not in message
+
+
+def test_unbuildable_tagged_value_is_refused(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - id: a
+            tool: echo
+            arguments: {text: !!bool maybe}
+            expect: {type: no_error}
+        """,
+    )
+    message = _load_error(path)
+    assert "line 5, column" in message
+    assert "maybe" in message
+
+
+def test_unbuildable_tagged_value_exits_2(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+        name: s
+        tests:
+          - {id: a, tool: echo, arguments: {text: !!bool maybe}, expect: {type: no_error}}
+        """,
+    )
+    result = CliRunner().invoke(app, ["run", str(path)])
+    assert result.exit_code == 2
+
+
+def test_then_without_if_is_refused_not_mistaken_for_a_loop(tmp_path):
+    # Without an `if`, `then` is never evaluated: it is dead, and its reference cannot recurse.
+    message = _load_error(_one_test(tmp_path, "{type: schema_valid, schema: {then: {$ref: '#'}}}"))
+    assert "expect.schema.then: is ignored without 'if'" in message
+    assert "loops back" not in message
+
+
+def test_if_then_loop_is_refused(tmp_path):
+    path = _one_test(
+        tmp_path, "{type: schema_valid, schema: {if: {type: object}, then: {$ref: '#'}}}"
+    )
+    assert "expect.schema.then.$ref: loops back to itself" in _load_error(path)
+
+
+# --- N4 review fixes ------------------------------------------------------------
+
+_DRAFT_04 = "'http://json-schema.org/draft-04/schema#'"
+_DRAFT_06 = "'http://json-schema.org/draft-06/schema#'"
+_DRAFT_2019 = "'https://json-schema.org/draft/2019-09/schema'"
+
+
+def _schema_test(tmp_path: Path, schema: str) -> Path:
+    return _one_test(tmp_path, f"{{type: schema_valid, schema: {schema}}}")
+
+
+@pytest.mark.parametrize(
+    ("draft", "name"), [(_DRAFT_04, "draft-04"), (_DRAFT_06, "draft-06"), (_DRAFT_07, "draft-07")]
+)
+@pytest.mark.parametrize("sibling", ["required: [status]", "format: uri", "enum: [a]"])
+def test_asserting_keyword_beside_ref_is_refused_in_old_drafts(tmp_path, draft, name, sibling):
+    # These drafts never evaluate a $ref's siblings: the check would silently pass.
+    key = sibling.split(":")[0]
+    schema = f"{{$schema: {draft}, definitions: {{o: {{}}}}, $ref: '#/definitions/o', {sibling}}}"
+    message = _load_error(_schema_test(tmp_path, schema))
+    assert f"expect.schema.{key}: is ignored next to $ref in {name}" in message
+    assert "(move it into allOf with the $ref)" in message
+
+
+def test_annotations_beside_ref_load_in_old_drafts(tmp_path):
+    schema = (
+        f"{{$schema: {_DRAFT_07}, title: t, description: d, "
+        "definitions: {o: {type: object}}, $ref: '#/definitions/o'}"
+    )
+    load_suite(_schema_test(tmp_path, schema))
+
+
+def test_asserting_keyword_beside_ref_loads_in_2020_12(tmp_path):
+    # 2020-12 evaluates a $ref's siblings, so nothing is lost.
+    load_suite(_schema_test(tmp_path, "{$defs: {o: {}}, $ref: '#/$defs/o', required: [status]}"))
+
+
+_EMBEDDED_LOOP = (
+    "{$id: 'https://e.com/root', $defs: {inner: {$id: 'https://e.com/inner', "
+    "anyOf: [{$ref: '#'}]}}, properties: {p: {$ref: '#/$defs/inner'}}}"
+)
+
+
+def test_loop_inside_a_subschema_with_its_own_id_is_refused(tmp_path):
+    # '#' inside `inner` means `inner` itself, so `inner` refers to itself in place.
+    message = _load_error(_schema_test(tmp_path, _EMBEDDED_LOOP))
+    assert "expect.schema.$defs.inner.anyOf[0].$ref: loops back to itself" in message
+
+
+def test_reference_scoped_to_a_subschema_with_its_own_id_loads(tmp_path):
+    schema = (
+        "{$id: 'https://e.com/root', properties: {a: {$id: 'https://e.com/a', "
+        "$defs: {x: {type: string}}, $ref: '#/$defs/x'}}}"
+    )
+    load_suite(_schema_test(tmp_path, schema))
+
+
+def test_reference_to_an_embedded_id_is_local(tmp_path):
+    schema = (
+        "{$defs: {s: {$id: 'https://e.com/s', type: string}}, "
+        "properties: {a: {$ref: 'https://e.com/s'}}}"
+    )
+    load_suite(_schema_test(tmp_path, schema))
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        (
+            "{type: array, minContains: 2}",
+            "expect.schema.minContains: is ignored without 'contains'",
+        ),
+        (
+            f"{{$schema: {_DRAFT_07}, items: {{type: string}}, additionalItems: false}}",
+            "expect.schema.additionalItems: is ignored unless 'items' is a list",
+        ),
+        (
+            f"{{$schema: {_DRAFT_04}, exclusiveMaximum: true}}",
+            # Draft-04's own meta-schema refuses it.
+            "'maximum' is a dependency of 'exclusiveMaximum'",
+        ),
+        ("{else: {type: string}}", "expect.schema.else: is ignored without 'if'"),
+    ],
+)
+def test_keyword_that_checks_nothing_where_it_sits_is_refused(tmp_path, schema, expected):
+    assert expected in _load_error(_schema_test(tmp_path, schema))
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        f"{{$schema: {_DRAFT_04}, type: object, "
+        "properties: {n: {maximum: 10, exclusiveMaximum: true}}}",
+        f"{{$schema: {_DRAFT_06}, type: object, examples: [{{}}], "
+        "propertyNames: {maxLength: 3}}",
+        f"{{$schema: {_DRAFT_07}, type: object, properties: {{p: {{writeOnly: true}}}}}}",
+        f"{{$schema: {_DRAFT_2019}, type: object, $recursiveAnchor: true, "
+        "properties: {child: {$recursiveRef: '#'}}, dependentRequired: {a: [b]}}",
+        f"{{$schema: {_DRAFT_2019}, type: string, format: duration}}",
+    ],
+)
+def test_supported_drafts_load(tmp_path, schema):
+    load_suite(_schema_test(tmp_path, schema))
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        "{not: {$ref: '#'}}",
+        "{oneOf: [{$ref: '#'}, {type: string}]}",
+        "{dependentSchemas: {a: {$ref: '#'}}}",
+        f"{{$schema: {_DRAFT_07}, dependencies: {{a: {{$ref: '#'}}}}}}",
+        f"{{$schema: {_DRAFT_2019}, $recursiveAnchor: true, anyOf: [{{$recursiveRef: '#'}}]}}",
+        "{$defs: {m: {$dynamicAnchor: meta, allOf: [{$dynamicRef: '#meta'}]}}, $ref: '#/$defs/m'}",
+    ],
+)
+def test_every_in_place_keyword_can_close_a_loop(tmp_path, schema):
+    message = _load_error(_schema_test(tmp_path, schema))
+    assert "loops back to itself without checking any data" in message
+
+
+@pytest.mark.parametrize("keyword", ["$recursiveRef: '#'", "$recursiveAnchor: x"])
+def test_keywords_2020_12_ignores_are_refused(tmp_path, keyword):
+    message = _load_error(_schema_test(tmp_path, f"{{{keyword}}}"))
+    assert "is not used by draft 2020-12 (declare $schema for draft 2019-09)" in message
+
+
+def test_unknown_schema_dialect_below_the_root_is_refused(tmp_path):
+    schema = "{properties: {a: {$schema: 'https://example.com/bogus'}}}"
+    assert "only the root schema may declare $schema" in _load_error(_schema_test(tmp_path, schema))

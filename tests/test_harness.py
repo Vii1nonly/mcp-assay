@@ -156,6 +156,7 @@ def test_json_rpc_error_reply_is_a_server_rejection(check, expected):
 
 # A schema that refers to itself makes jsonschema recurse until RecursionError.
 # That is a harness failure, not a server verdict: only the test it hit is lost.
+# Loading now refuses this schema; built directly here, it still proves the guard.
 _SELF_REF = {"type": "schema_valid", "schema": {"$ref": "#"}}
 
 
@@ -229,3 +230,96 @@ def test_ctrl_c_while_grading_still_stops_the_run(monkeypatch):
     monkeypatch.setattr(mcp_assay.runner, "grade", interrupted)
     with pytest.raises(KeyboardInterrupt):
         mcp_assay.runner.grade_safely(_execution())
+
+
+# --- N4: grading rules that were too generous ---------------------------------
+
+
+def _schema_case(schema: dict) -> TestCase:
+    return TestCase(id="t", tool="x", expect={"type": "schema_valid", "schema": schema})
+
+
+def test_internal_error_is_not_a_rejection():
+    # -32603 says the server broke, not that it evaluated the input and refused it.
+    from mcp_assay.graders import grade
+
+    execution = _execution(
+        test_case=_case("is_error"), rpc_error_code=-32603, error_message="Internal error"
+    )
+    result = grade(execution)
+    assert result.verdict == "fail"
+    assert "-32603" in result.reason
+
+
+def test_schema_valid_fails_when_the_server_flagged_an_error():
+    # The data matching the schema does not make a result the server called an error valid.
+    from mcp_assay.graders import grade
+
+    execution = _execution(
+        test_case=_schema_case({"type": "object"}), is_error=True, structured={"status": "x"}
+    )
+    result = grade(execution)
+    assert result.verdict == "fail"
+    assert "isError" in result.reason
+
+
+@pytest.mark.parametrize(
+    ("fmt", "bad", "good"),
+    [
+        ("email", "not-an-email", "a@example.com"),
+        ("uri", "not a uri", "https://example.com/x"),
+        ("date-time", "yesterday", "2026-10-05T12:00:00Z"),
+    ],
+)
+def test_format_is_checked(fmt, bad, good):
+    from mcp_assay.graders import grade
+
+    schema = {"type": "object", "properties": {"v": {"type": "string", "format": fmt}}}
+    bad_result = grade(_execution(test_case=_schema_case(schema), structured={"v": bad}))
+    good_result = grade(_execution(test_case=_schema_case(schema), structured={"v": good}))
+    assert (bad_result.verdict, good_result.verdict) == ("fail", "pass")
+    assert "v" in bad_result.reason
+
+
+def test_declared_draft_07_is_honoured():
+    # Draft 2020-12 ignores `dependencies`; graded as 2020-12 this would pass.
+    from mcp_assay.graders import grade
+
+    schema = {"$schema": "http://json-schema.org/draft-07/schema#", "dependencies": {"a": ["b"]}}
+    result = grade(_execution(test_case=_schema_case(schema), structured={"a": 1}))
+    assert result.verdict == "fail"
+
+
+def test_declared_draft_04_boolean_exclusive_maximum_is_honoured():
+    # Read as 2020-12, `exclusiveMaximum: true` is not a number and 5 < 10 would fail.
+    from mcp_assay.graders import grade
+
+    schema = {
+        "$schema": "http://json-schema.org/draft-04/schema#",
+        "type": "object",
+        "properties": {"n": {"maximum": 10, "exclusiveMaximum": True}},
+    }
+    result = grade(_execution(test_case=_schema_case(schema), structured={"n": 5}))
+    assert result.verdict == "pass"
+
+
+def test_draft_2019_09_format_is_checked():
+    from mcp_assay.graders import grade
+
+    schema = {
+        "$schema": "https://json-schema.org/draft/2019-09/schema",
+        "type": "object",
+        "properties": {"d": {"type": "string", "format": "duration"}},
+    }
+    bad = grade(_execution(test_case=_schema_case(schema), structured={"d": "two days"}))
+    good = grade(_execution(test_case=_schema_case(schema), structured={"d": "P2D"}))
+    assert (bad.verdict, good.verdict) == ("fail", "pass")
+
+
+def test_2020_12_ref_sibling_is_enforced():
+    # 2020-12 evaluates keywords beside a $ref; the server must still meet them.
+    from mcp_assay.graders import grade
+
+    schema = {"$defs": {"o": {"type": "object"}}, "$ref": "#/$defs/o", "required": ["status"]}
+    result = grade(_execution(test_case=_schema_case(schema), structured={}))
+    assert result.verdict == "fail"

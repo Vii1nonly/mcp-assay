@@ -16,6 +16,7 @@ src/mcp_assay/
   connector.py  the ONLY module that touches the MCP protocol
   runner.py     runs each test through the connector, then grades it
   graders.py    one function per check type, dispatched via CHECKS
+  schemas.py    JSON Schema rules (draft, keywords, formats) shared by suite.py and graders.py
   report.py     renders the scorecard
   cli.py        typer entrypoint (`mcp-assay run`, `mcp-assay tools`)
 suites/         test suites as YAML data
@@ -32,6 +33,7 @@ tests/          pytest suite for the harness itself
 - A new check type is a function in `graders.py` plus an entry in `CHECKS` plus a
   `CheckType` literal in `models.py`. Nothing else changes.
 - Adding a transport means producing an `ExecutionResult`; graders must not change.
+- A schema is loaded and graded under the same draft rules, both taken from `schemas.py`.
 
 ## How to work with me
 
@@ -70,9 +72,11 @@ sleeps 5s, so the default 10s timeout hides it).
   rejection is credited. YAML-converted values (unquoted yes/no/on/off/y/n, dates) are
   now refused when the suite loads. The v0.1.2 preflight must still check each test's
   argument names, and value types, against that tool's `inputSchema`.
-- **Follow-up for N4:** a self-referencing schema such as `{$ref: '#'}` loads, then makes
-  the grader recurse until `RecursionError`. N3 reports that as an inconclusive harness
-  error; N4 could refuse such a schema when the suite loads.
+- **Still open:** the MCP Python SDK turns an unexpected tool exception into a result
+  with `isError: true`, so `is_error` credits a crash as a rejection when it does not
+  reach the wire as JSON-RPC -32603. Message assertions (v0.2) are the planned fix.
+- **Known limit:** `format: regex` and `pattern` use Python `re`, so an ECMA-262-only
+  pattern such as `\p{L}` can give a wrong fail.
 
 ## Commands
 

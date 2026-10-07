@@ -55,6 +55,7 @@ suite YAML  --load-->  TestCase
 | `connector.py` | spawns the server, speaks JSON-RPC over stdio |
 | `runner.py` | runs every case, then aggregates |
 | `graders.py` | decides pass or fail |
+| `schemas.py` | JSON Schema rules shared by loading and grading |
 | `report.py` | renders the scorecard |
 
 ## Checks
@@ -62,8 +63,8 @@ suite YAML  --load-->  TestCase
 | Check | Passes when |
 | --- | --- |
 | `no_error` | the call completes and the server does not flag an error |
-| `is_error` | the server rejects the call, as it should for invalid input — with an error result or a JSON-RPC error reply. Parse error, invalid request and method not found (-32700, -32600, -32601) do not count: the server never evaluated the input |
-| `schema_valid` | structured content validates against the supplied JSON Schema |
+| `is_error` | the server rejects the call, as it should for invalid input — with an error result or a JSON-RPC error reply. Parse error, invalid request and method not found (-32700, -32600, -32601) do not count: the server never evaluated the input. Internal error (-32603) does not count either: the server broke instead of rejecting |
+| `schema_valid` | structured content validates against the supplied JSON Schema, and the server did not flag the result as an error |
 
 Every check returns **inconclusive** instead when the harness never observed the
 server's answer: the call timed out or the connection broke. A timeout is not a
@@ -74,6 +75,28 @@ every check grades it **fail**.
 
 `is_error` is the one that finds real bugs: a server that cheerfully accepts
 input its own schema declares invalid.
+
+### Schemas
+
+A `schema_valid` schema uses JSON Schema draft 2020-12 unless it declares another
+with `$schema` (draft-04, -06, -07 and 2019-09 are supported). It is checked when
+the suite loads, under the same rules the grader uses, so a mistake is refused
+before any server starts instead of quietly checking nothing:
+
+- a keyword the draft does not act on, such as a misspelling or a keyword from
+  another draft (`dependencies` is draft-07; 2020-12 uses `dependentRequired`);
+- a keyword the draft ignores where it sits: an asserting keyword next to `$ref` in
+  draft-07 and earlier, `then`/`else` without `if`, `minContains` without `contains`,
+  `additionalItems` when `items` is not a list;
+- a `format` the draft cannot check, so a format is always either checked or refused;
+- a schema that loops back to itself without checking any data, such as `{$ref: '#'}`,
+  including through a subschema with its own `$id`;
+- a `$ref` that does not resolve inside the schema (grading never fetches one).
+
+`format` is checked, not just noted, with jsonschema's format checkers for the
+declared draft. Some checks are loose: `email` only requires an `@`. `regex` and the
+`pattern` keyword use Python's regular-expression syntax, so a pattern valid only in
+ECMA-262 (such as `\p{L}`) is treated as invalid.
 
 ## Suites are data
 

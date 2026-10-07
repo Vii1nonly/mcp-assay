@@ -13,12 +13,13 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 import mcp_assay.cli
+from mcp_assay import graders
 from mcp_assay.cli import app
 
 REPO = Path(__file__).parent.parent
 
 
-def _suite(tmp_path: Path, *, self_ref: bool = False, command: str | None = None) -> Path:
+def _suite(tmp_path: Path, *, command: str | None = None) -> Path:
     """A two-test suite against examples/broken_server.py, run from the repo root."""
     server = (
         f"server: {{command: {command}}}"
@@ -26,7 +27,6 @@ def _suite(tmp_path: Path, *, self_ref: bool = False, command: str | None = None
         else "server: {command: python, args: [examples/broken_server.py], "
         f"cwd: '{REPO.as_posix()}'}}"
     )
-    schema = "{$ref: '#'}" if self_ref else "{type: object}"
     path = tmp_path / "suite.yaml"
     path.write_text(
         textwrap.dedent(
@@ -35,7 +35,9 @@ def _suite(tmp_path: Path, *, self_ref: bool = False, command: str | None = None
             {server}
             tests:
               - {{id: echo, tool: echo, arguments: {{text: hi}}, expect: {{type: no_error}}}}
-              - {{id: status, tool: get_status, expect: {{type: schema_valid, schema: {schema}}}}}
+              - id: status
+                tool: get_status
+                expect: {{type: schema_valid, schema: {{type: object}}}}
             """
         ),
         encoding="utf-8",
@@ -45,6 +47,16 @@ def _suite(tmp_path: Path, *, self_ref: bool = False, command: str | None = None
 
 def _run(*args: str):
     return CliRunner().invoke(app, ["run", *args])
+
+
+def _break_schema_grader(monkeypatch) -> None:
+    """Fault injection: the load rules now refuse every known schema that crashes the
+    grader, so a grading crash is simulated to prove the guard still holds."""
+
+    def boom(execution):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setitem(graders.CHECKS, "schema_valid", boom)
 
 
 def test_missing_json_folder_is_refused_before_the_server_starts(tmp_path):
@@ -106,8 +118,9 @@ def test_render_failure_keeps_the_json_and_exits_2(tmp_path, monkeypatch):
         raise RuntimeError("render exploded")
 
     monkeypatch.setattr(mcp_assay.cli, "print_scorecard", broken_render)
+    _break_schema_grader(monkeypatch)
     out = tmp_path / "out.json"
-    result = _run(str(_suite(tmp_path, self_ref=True)), "--json", str(out))
+    result = _run(str(_suite(tmp_path)), "--json", str(out))
     assert result.exit_code == 2
     assert len(json.loads(out.read_text(encoding="utf-8"))["results"]) == 2
     stderr = result.stderr.splitlines()
@@ -131,10 +144,10 @@ def test_late_json_write_failure_still_shows_every_verdict(tmp_path):
     assert "cannot write" in line
 
 
-def test_harness_error_end_to_end(tmp_path):
-    # {$ref: '#'} passes the load rules, then makes the grader recurse forever.
+def test_harness_error_end_to_end(tmp_path, monkeypatch):
+    _break_schema_grader(monkeypatch)
     out = tmp_path / "out.json"
-    result = _run(str(_suite(tmp_path, self_ref=True)), "--json", str(out))
+    result = _run(str(_suite(tmp_path)), "--json", str(out))
     assert result.exit_code == 1
     assert "Harness errors" in result.stdout
     assert "warning: 1 test could not be graded" in result.stdout
