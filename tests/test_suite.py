@@ -738,3 +738,76 @@ def test_keywords_2020_12_ignores_are_refused(tmp_path, keyword):
 def test_unknown_schema_dialect_below_the_root_is_refused(tmp_path):
     schema = "{properties: {a: {$schema: 'https://example.com/bogus'}}}"
     assert "only the root schema may declare $schema" in _load_error(_schema_test(tmp_path, schema))
+
+
+# N6: the server's working folder follows one rule, however the suite path is written.
+def _suite_at(path: Path, cwd: str | None = None) -> Path:
+    server = "{command: python}" if cwd is None else f"{{command: python, cwd: '{cwd}'}}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    test = "{id: a, tool: echo, expect: {type: no_error}}"
+    path.write_text(f"name: s\nserver: {server}\ntests:\n  - {test}\n", encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("where", ["suite.yaml", "suites/suite.yaml"])
+def test_same_cwd_by_relative_and_absolute_path(tmp_path, monkeypatch, where):
+    project = tmp_path / "project"
+    suite = _suite_at(project / where)
+    monkeypatch.chdir(project)
+    by_relative = load_suite(where).server.cwd
+    by_absolute = load_suite(suite.resolve()).server.cwd
+    assert by_relative == by_absolute == str(suite.resolve().parent)
+
+
+def test_relative_cwd_is_read_from_the_suite_folder(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    (project / "server").mkdir(parents=True)
+    _suite_at(project / "suites" / "suite.yaml", cwd="../server")
+    monkeypatch.chdir(tmp_path)  # not the suite's folder, so a process-relative read would differ
+    cwd = load_suite("project/suites/suite.yaml").server.cwd
+    assert cwd == str((project / "server").resolve())
+
+
+def test_absolute_cwd_keeps_its_folder(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    suite = _suite_at(tmp_path / "suites" / "suite.yaml", cwd=elsewhere.as_posix())
+    assert load_suite(suite).server.cwd == str(elsewhere.resolve())
+
+
+def test_missing_cwd_is_refused_naming_the_resolved_folder(tmp_path):
+    suite = _suite_at(tmp_path / "suites" / "suite.yaml", cwd="../nope")
+    message = _load_error(suite)
+    assert f"server.cwd: folder {(tmp_path / 'nope').resolve()} does not exist" in message
+
+
+def test_cwd_that_is_a_file_is_refused(tmp_path):
+    (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+    suite = _suite_at(tmp_path / "suite.yaml", cwd="file.txt")
+    message = _load_error(suite)
+    assert f"server.cwd: {(tmp_path / 'file.txt').resolve()} is not a folder" in message
+
+
+def test_cli_refuses_a_missing_cwd_before_the_server_starts(tmp_path):
+    suite = _suite_at(tmp_path / "suite.yaml", cwd="nope")
+    result = _run_cli(str(suite))
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    [line] = result.stderr.splitlines()
+    assert str((tmp_path / "nope").resolve()) in line
+
+
+@pytest.mark.parametrize("name", ["broken_server.yaml", "filesystem.yaml"])
+def test_shipped_suites_start_in_the_repo_root(name):
+    assert load_suite(SUITES / name).server.cwd == str(REPO.resolve())
+
+
+def test_readme_example_suite_loads(tmp_path):
+    # The README's example is the suite format's documentation; it must stay loadable.
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    section = readme.split("## Writing a suite", 1)[1]
+    example = section.split("```yaml\n", 1)[1].split("```", 1)[0]
+    suite = tmp_path / "suites" / "example.yaml"
+    suite.parent.mkdir()
+    suite.write_text(example, encoding="utf-8")
+    assert load_suite(suite).server.cwd == str(tmp_path.resolve())

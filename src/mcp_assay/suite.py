@@ -63,10 +63,30 @@ def load_suite(path: str | Path) -> Suite:
     problems = _rule_problems(suite, data)
     if problems:
         raise _refusal(path, problems)
-    if suite.server and suite.server.cwd is None:
-        # Server paths in a suite file are written relative to the suite.
-        suite.server.cwd = str(path.parent.parent.resolve())
+    if suite.server:
+        cwd, problem = _server_cwd(path, suite.server.cwd)
+        if problem:
+            raise _refusal(path, [problem])
+        suite.server.cwd = cwd
     return suite
+
+
+def _server_cwd(path: Path, cwd: str | None) -> tuple[str | None, str | None]:
+    """The folder the server starts in, or a problem with it.
+
+    It is the suite file's own folder, or `cwd` read relative to that folder (an
+    absolute `cwd` keeps its folder). The suite path is resolved first, so the
+    same file gives the same folder by a relative or an absolute path.
+    """
+    try:
+        folder = (path.resolve().parent / (cwd or "")).resolve()
+    except (OSError, ValueError) as e:
+        return None, f"server.cwd: cannot use '{cwd}': {e}"
+    if not folder.exists():
+        return None, f"server.cwd: folder {folder} does not exist"
+    if not folder.is_dir():
+        return None, f"server.cwd: {folder} is not a folder"
+    return str(folder), None
 
 
 def _rule_problems(suite: Suite, data) -> list[str]:

@@ -3,6 +3,7 @@ name: filesystem-server-baseline
 server:
   command: npx
   args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+  cwd: ..  # the repo root: cwd is read relative to this file's folder
 
 tests:
   - id: read-text-file-happy-path

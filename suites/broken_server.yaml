@@ -2,6 +2,7 @@ name: broken-server-baseline
 server:
   command: python
   args: ["examples/broken_server.py"]
+  cwd: ..  # the repo root: cwd is read relative to this file's folder
 
 tests:
   - id: echo-happy-path

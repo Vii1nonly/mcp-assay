@@ -98,18 +98,58 @@ declared draft. Some checks are loose: `email` only requires an `@`. `regex` and
 `pattern` keyword use Python's regular-expression syntax, so a pattern valid only in
 ECMA-262 (such as `\p{L}`) is treated as invalid.
 
-## Suites are data
+## Writing a suite
 
-Adding a test means editing YAML, not Python:
+Suites are data: adding a test means editing YAML, not Python. A suite file names
+the server to start and lists the tests. This one, saved as `suites/example.yaml`,
+runs against the deliberately broken server in `examples/`:
 
 ```yaml
-- id: read-text-file-missing-required-arg
-  category: robustness
-  tool: read_text_file
-  arguments: {}
-  expect:
-    type: is_error
+name: example
+server:
+  command: python                       # the program to start
+  args: ["examples/broken_server.py"]   # its arguments, as a list
+  cwd: ..                               # the folder it starts in: here, the repo root
+
+tests:
+  - id: echo-happy-path
+    description: A valid call should succeed.
+    category: correctness
+    tool: echo
+    arguments:
+      text: hello
+    expect:
+      type: no_error
+
+  - id: strict-echo-missing-required-arg
+    description: A call without a required argument should be rejected.
+    category: robustness
+    tool: strict_echo
+    arguments: {}
+    expect:
+      type: is_error
+
+  - id: get-status-matches-schema
+    category: correctness
+    tool: get_status
+    expect:
+      type: schema_valid
+      schema:
+        type: object
+        required: [status]
 ```
+
+The `server:` block has three keys:
+
+- `command`: the program to start. Required.
+- `args`: its arguments, as a list. Optional.
+- `cwd`: the folder the server starts in. Optional. A relative `cwd` is read from the folder that holds the suite file, not from where you run `mcp-assay`, so `cwd: ..` above is the folder above `suites/`. An absolute `cwd` is used as written. Without `cwd`, the server starts in the suite file's own folder. A `cwd` that does not exist is refused when the suite loads.
+
+Relative paths in `args` are read by the server itself, from its `cwd`.
+
+`--command` and `--arg` replace the whole `server:` block, `cwd` included. The server then starts in the folder you run `mcp-assay` from, as it would if you typed the command yourself. The suite is still checked in full when it loads, so a `server:` block with a `cwd` that does not exist is refused even then. A suite run only with `--command` can leave `server:` out.
+
+Each test has an `id` (unique in the suite), a `tool`, its `arguments` (default `{}`) and an `expect` block. `expect.type` is one of the checks above; `schema_valid` also takes a `schema`. `category` (default `correctness`) groups the scorecard, and `description` is free text.
 
 The suite's own keys and schemas are checked strictly when it loads. A misspelled key, a misplaced `schema`, a duplicate id or a broken schema stops the run before the server starts, with one line naming the file and the spot. Argument names and values inside `arguments` are passed through as written: only the server checks them.
 

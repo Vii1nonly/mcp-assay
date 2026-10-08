@@ -30,6 +30,9 @@ tests/          pytest suite for the harness itself
   the one before it, so any verdict traces back to the raw exchange.
 - Protocol types stay inside `connector.py`. Downstream code sees `ExecutionResult` only.
 - Suites are data. A new test case is YAML, never Python.
+- A suite's server starts in the suite file's own folder, or in its `cwd:` read relative
+  to that folder. Both are resolved and checked once, in `load_suite`. `--command` starts
+  it in the current folder, but the suite's `cwd` is still checked at load.
 - A new check type is a function in `graders.py` plus an entry in `CHECKS` plus a
   `CheckType` literal in `models.py`. Nothing else changes.
 - Adding a transport means producing an `ExecutionResult`; graders must not change.

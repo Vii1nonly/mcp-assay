@@ -19,13 +19,13 @@ from mcp_assay.cli import app
 REPO = Path(__file__).parent.parent
 
 
-def _suite(tmp_path: Path, *, command: str | None = None) -> Path:
+def _suite(tmp_path: Path, *, command: str | None = None, cwd: Path = REPO) -> Path:
     """A two-test suite against examples/broken_server.py, run from the repo root."""
     server = (
         f"server: {{command: {command}}}"
         if command
         else "server: {command: python, args: [examples/broken_server.py], "
-        f"cwd: '{REPO.as_posix()}'}}"
+        f"cwd: '{cwd.as_posix()}'}}"
     )
     path = tmp_path / "suite.yaml"
     path.write_text(
@@ -109,6 +109,34 @@ def test_cp1252_console_does_not_lose_the_verdicts(tmp_path):
     assert proc.returncode == 0  # both tests pass; nothing was lost to the console
     assert len(json.loads(out.read_text(encoding="utf-8"))["results"]) == 2
     assert "broken_server.py ?" in proc.stdout.decode("cp1252")
+
+
+def test_command_option_starts_the_server_in_the_current_folder(tmp_path, monkeypatch):
+    # N6: --command replaces the suite's server block, cwd included, so the server
+    # starts where the user typed the command. The suite's cwd is an empty folder:
+    # had it been used, examples/broken_server.py would not be found.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    suite = _suite(tmp_path, cwd=empty)
+    monkeypatch.chdir(REPO)
+    result = _run(str(suite), "--command", sys.executable, "--arg", "examples/broken_server.py")
+    assert result.exit_code == 0, result.output
+    assert "2/2 passed" in result.stdout
+    # The control: without --command the suite's cwd is used and the server is not found.
+    assert _run(str(suite)).exit_code == 1
+
+
+def test_missing_suite_cwd_is_refused_even_with_command(tmp_path, monkeypatch):
+    # The suite is checked in full when it loads, so a cwd that does not exist is
+    # refused even though --command replaces the server block that holds it.
+    missing = tmp_path / "nope"
+    suite = _suite(tmp_path, cwd=missing)
+    monkeypatch.chdir(REPO)
+    result = _run(str(suite), "--command", sys.executable, "--arg", "examples/broken_server.py")
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    [line] = result.stderr.splitlines()
+    assert str(missing.resolve()) in line
 
 
 def test_render_failure_keeps_the_json_and_exits_2(tmp_path, monkeypatch):
