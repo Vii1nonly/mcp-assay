@@ -1,6 +1,6 @@
 [project]
 name = "mcp-assay"
-version = "0.1.0"
+version = "0.1.1"
 description = "An eval and benchmark harness for MCP servers"
 license = "MIT"
 requires-python = ">=3.12"
