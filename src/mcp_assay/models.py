@@ -47,6 +47,9 @@ class ExecutionResult(BaseModel):
     test_case: TestCase
     latency_ms: float
     outcome: Outcome
+    # The server session the call ran on, counted from 1. No default: every
+    # result must say which session produced it.
+    session: int
     # True when the server returned a result explicitly flagged as an error.
     is_error: bool = False
     # Set when the server answered with a JSON-RPC error instead of a result.

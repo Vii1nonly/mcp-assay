@@ -22,6 +22,8 @@ async def test_broken_server_is_caught():
     # The two planted bugs.
     assert verdicts["read-file-missing-required-arg"] == "fail"
     assert verdicts["get-status-matches-output-schema"] == "fail"
+    # N7: one session runs the whole suite.
+    assert [r.execution.session for r in scorecard.results] == [1] * len(suite.tests)
 
 
 @pytest.mark.asyncio
@@ -41,10 +43,10 @@ async def test_timeout_under_is_error_is_not_credited_as_a_rejection():
     assert result.execution.outcome == "timeout"
 
 
-async def _run_one(test_case: TestCase):
+async def _run_one(test_case: TestCase, timeout: float = 10.0):
     server = load_suite(SUITE).server
     suite = Suite(name="one", server=server, tests=[test_case])
-    [result] = (await run_suite(suite, server)).results
+    [result] = (await run_suite(suite, server, timeout)).results
     return result
 
 
@@ -102,11 +104,87 @@ async def test_method_not_found_is_not_a_rejection_of_the_input():
     assert result.verdict == "fail"
 
 
+# --- N7: test tools for recovery, and the connector owning the loop ------------
+
+
+@pytest.mark.asyncio
+async def test_hang_with_a_short_stall_answers():
+    # `seconds` sets the stall; 0.2s is well inside the 2s timeout.
+    test_case = TestCase(
+        id="short", tool="hang", arguments={"seconds": 0.2}, expect={"type": "no_error"}
+    )
+    result = await _run_one(test_case, timeout=2.0)
+    assert result.execution.outcome == "answered"
+    assert result.verdict == "pass"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("check", ["no_error", "is_error"])
+async def test_server_crash_mid_call_is_not_observed(check):
+    # The server exits without replying: no answer was observed, so no check
+    # may credit or blame it. Under is_error it must never pass as a rejection.
+    result = await _run_one(TestCase(id="crash", tool="crash", expect={"type": check}))
+    assert result.execution.outcome == "transport_error"
+    assert result.verdict == "inconclusive"
+
+
+@pytest.mark.asyncio
+async def test_connector_runs_the_tests_in_order_on_one_session():
+    from mcp_types.version import LATEST_HANDSHAKE_VERSION
+
+    from mcp_assay.connector import run_tests
+
+    server = load_suite(SUITE).server
+    tests = [
+        TestCase(id="a", tool="echo", arguments={"text": "1"}, expect={"type": "no_error"}),
+        TestCase(id="b", tool="strict_echo", expect={"type": "is_error"}),
+    ]
+    results, protocol_version = await run_tests(
+        server.command, server.args, server.cwd, tests, 10.0
+    )
+    assert [r.test_case.id for r in results] == ["a", "b"]
+    assert [r.session for r in results] == [1, 1]
+    assert results[1].rpc_error_code == -32602
+    # The example server echoes the version the SDK asks for in the handshake.
+    assert protocol_version == LATEST_HANDSHAKE_VERSION
+
+
+def test_session_has_no_default():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="session"):
+        ExecutionResult(
+            test_case=TestCase(id="t", tool="x", expect={"type": "no_error"}),
+            latency_ms=1.0,
+            outcome="answered",
+        )
+
+
+def test_runner_touches_no_protocol_object():
+    # Protocol types stay inside connector.py (CLAUDE.md invariant).
+    import ast
+
+    source = (Path(__file__).parent.parent / "src" / "mcp_assay" / "runner.py").read_text(
+        encoding="utf-8"
+    )
+    modules = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            modules |= {alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            modules.add(node.module)
+    # The SDK defines its protocol types in a second top-level package, mcp_types.
+    assert not {m for m in modules if m.split(".")[0] in {"mcp", "mcp_types"}}
+    for name in ("ClientSession", "InitializeResult", "open_stdio_session", "init_result"):
+        assert name not in source
+
+
 def _execution(**kwargs) -> ExecutionResult:
     defaults = {
         "test_case": TestCase(id="t", tool="x", expect={"type": "no_error"}),
         "latency_ms": 1.0,
         "outcome": "answered",
+        "session": 1,
     }
     return ExecutionResult(**{**defaults, **kwargs})
 

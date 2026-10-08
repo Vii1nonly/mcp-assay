@@ -14,6 +14,7 @@ def _result(test_id, verdict, reason, harness_error=False, outcome="answered", c
         test_case=TestCase(id=test_id, tool="x", expect={"type": "no_error"}, category=category),
         latency_ms=1.0,
         outcome=outcome,
+        session=1,
     )
     return GradedResult(
         execution=execution, verdict=verdict, reason=reason, harness_error=harness_error

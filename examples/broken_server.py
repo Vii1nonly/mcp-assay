@@ -6,7 +6,8 @@ validate arguments and block the exact misbehavior we want to exhibit.
 Planted bugs:
   read_file   declares `path` as required, then happily succeeds without it.
   get_status  declares an output schema, then returns data that violates it.
-  hang        stalls long enough to trip the harness timeout.
+  hang        stalls long enough to trip the harness timeout (`seconds`, default 5).
+  crash       ends the server process mid-call without replying.
   echo        behaves correctly, so not every test fails.
 
 Correct behaviour the harness must still credit:
@@ -21,6 +22,7 @@ More bugs the harness must grade as failures:
 """
 
 import json
+import os
 import sys
 import time
 
@@ -56,6 +58,11 @@ TOOLS = [
     {
         "name": "hang",
         "description": "Eventually replies, but not soon enough to be useful.",
+        "inputSchema": {"type": "object", "properties": {"seconds": {"type": "number"}}},
+    },
+    {
+        "name": "crash",
+        "description": "Exits the server process before replying.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -125,8 +132,13 @@ def call_tool(name, arguments):
 
     if name == "hang":
         # BUG: blocks the whole server, so nothing else can be served meanwhile.
-        time.sleep(5)
+        time.sleep(arguments.get("seconds", 5))
         return text_result("sorry for the wait")
+
+    if name == "crash":
+        # BUG: dies mid-call, so the request never gets a reply.
+        sys.stdout.flush()
+        os._exit(1)
 
     if name == "get_status":
         # BUG: violates the declared outputSchema (status is a number, uptime absent).

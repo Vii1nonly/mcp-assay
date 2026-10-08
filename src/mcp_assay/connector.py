@@ -35,8 +35,23 @@ async def open_stdio_session(command: str, args: list[str], cwd: str | None = No
         yield session, init_result
 
 
+async def run_tests(
+    command: str, args: list[str], cwd: str | None, tests: list[TestCase], timeout: float
+) -> tuple[list[ExecutionResult], str]:
+    """Run every test case in order on one server session.
+
+    Returns the execution results and the negotiated protocol version. The cwd
+    is used as given: suite loading has already resolved it.
+    """
+    results = []
+    async with open_stdio_session(command, args, cwd) as (session, init_result):
+        for test_case in tests:
+            results.append(await run_test_case(session, test_case, timeout, session_number=1))
+    return results, init_result.protocol_version
+
+
 async def run_test_case(
-    session: ClientSession, test_case: TestCase, timeout: float = 10.0
+    session: ClientSession, test_case: TestCase, timeout: float, session_number: int
 ) -> ExecutionResult:
     """Execute one test case and record what happened, whatever happens."""
     # Deliberately not session.call_tool(): that validates the result against the
@@ -56,6 +71,7 @@ async def run_test_case(
     except asyncio.TimeoutError:
         return ExecutionResult(
             test_case=test_case,
+            session=session_number,
             latency_ms=(perf_counter() - start) * 1000,
             outcome="timeout",
             error_message=f"timed out after {timeout}s",
@@ -66,12 +82,14 @@ async def run_test_case(
         if local:
             return ExecutionResult(
                 test_case=test_case,
+                session=session_number,
                 latency_ms=latency_ms,
                 outcome=local,
                 error_message=f"{exc.message} (code {exc.code}; not attributable to the server)",
             )
         return ExecutionResult(
             test_case=test_case,
+            session=session_number,
             latency_ms=latency_ms,
             outcome="answered",
             rpc_error_code=exc.code,
@@ -82,6 +100,7 @@ async def run_test_case(
         # arrived, so this is an observed answer that broke the protocol shape.
         return ExecutionResult(
             test_case=test_case,
+            session=session_number,
             latency_ms=(perf_counter() - start) * 1000,
             outcome="answered",
             protocol_violation=str(exc).splitlines()[0],
@@ -92,6 +111,7 @@ async def run_test_case(
         # and every failure has to become a result rather than stop the run.
         return ExecutionResult(
             test_case=test_case,
+            session=session_number,
             latency_ms=(perf_counter() - start) * 1000,
             outcome="transport_error",
             error_message=f"{type(exc).__name__}: {exc}",
@@ -100,6 +120,7 @@ async def run_test_case(
     latency_ms = (perf_counter() - start) * 1000
     return ExecutionResult(
         test_case=test_case,
+        session=session_number,
         latency_ms=latency_ms,
         outcome="answered",
         is_error=result.is_error,

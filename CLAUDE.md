@@ -14,7 +14,7 @@ src/mcp_assay/
   models.py     the four objects: TestCase -> ExecutionResult -> GradedResult -> Scorecard
   suite.py      loads suite YAML into TestCase objects
   connector.py  the ONLY module that touches the MCP protocol
-  runner.py     runs each test through the connector, then grades it
+  runner.py     has the connector run the suite, then grades each result
   graders.py    one function per check type, dispatched via CHECKS
   schemas.py    JSON Schema rules (draft, keywords, formats) shared by suite.py and graders.py
   report.py     renders the scorecard

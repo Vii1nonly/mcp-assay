@@ -52,8 +52,8 @@ suite YAML  --load-->  TestCase
 | Module | Stage |
 | --- | --- |
 | `suite.py` | parses suite YAML into `TestCase` objects |
-| `connector.py` | spawns the server, speaks JSON-RPC over stdio |
-| `runner.py` | runs every case, then aggregates |
+| `connector.py` | spawns the server and runs every case over one session, speaking JSON-RPC over stdio |
+| `runner.py` | grades every result the connector returns, then aggregates |
 | `graders.py` | decides pass or fail |
 | `schemas.py` | JSON Schema rules shared by loading and grading |
 | `report.py` | renders the scorecard |
