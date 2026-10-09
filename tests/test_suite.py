@@ -740,6 +740,20 @@ def test_unknown_schema_dialect_below_the_root_is_refused(tmp_path):
     assert "only the root schema may declare $schema" in _load_error(_schema_test(tmp_path, schema))
 
 
+# N8: the preflight opt-outs exist for is_error tests only.
+@pytest.mark.parametrize("flag", ["unknown_tool", "unknown_arguments"])
+@pytest.mark.parametrize("expect", ["{type: no_error}", "{type: schema_valid, schema: {}}"])
+def test_preflight_opt_out_is_refused_outside_is_error(tmp_path, flag, expect):
+    path = _one_test(tmp_path, expect, extra=f"    {flag}: true")
+    assert f"tests[0] (id 'a'): {flag}: only is_error tests may set it" in _load_error(path)
+
+
+@pytest.mark.parametrize("flag", ["unknown_tool", "unknown_arguments"])
+def test_preflight_opt_out_loads_on_is_error(tmp_path, flag):
+    [test] = load_suite(_one_test(tmp_path, "{type: is_error}", extra=f"    {flag}: true")).tests
+    assert getattr(test, flag) is True
+
+
 # N6: the server's working folder follows one rule, however the suite path is written.
 def _suite_at(path: Path, cwd: str | None = None) -> Path:
     server = "{command: python}" if cwd is None else f"{{command: python, cwd: '{cwd}'}}"
@@ -811,3 +825,13 @@ def test_readme_example_suite_loads(tmp_path):
     suite.parent.mkdir()
     suite.write_text(example, encoding="utf-8")
     assert load_suite(suite).server.cwd == str(tmp_path.resolve())
+
+
+def test_readme_opt_out_examples_load(tmp_path):
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    section = readme.split("Only `is_error` tests may set these keys:", 1)[1]
+    tests = section.split("```yaml\n", 1)[1].split("```", 1)[0]
+    suite = tmp_path / "suite.yaml"
+    suite.write_text("name: s\ntests:\n" + textwrap.indent(tests, "  "), encoding="utf-8")
+    loaded = load_suite(suite).tests
+    assert [(t.unknown_tool, t.unknown_arguments) for t in loaded] == [(True, False), (False, True)]

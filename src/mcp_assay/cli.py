@@ -7,6 +7,7 @@ import typer
 from rich.console import Console
 from rich.text import Text
 
+from .preflight import PreflightError
 from .report import print_scorecard
 from .runner import run_suite
 from .suite import ServerSpec, SuiteError, load_suite
@@ -60,7 +61,12 @@ def run(
         typer.echo(problem, err=True)
         raise typer.Exit(code=2)
 
-    scorecard = asyncio.run(run_suite(suite, server, timeout))
+    try:
+        scorecard = asyncio.run(run_suite(suite, server, timeout))
+    except PreflightError as e:
+        # Exit 2: a test does not fit the server, so no test was run.
+        typer.echo(f"{suite_path}: {e}", err=True)
+        raise typer.Exit(code=2) from None
 
     # Exit 2: a result could not be delivered. Exit 1 stays "a test failed or
     # was inconclusive". The JSON is written first so rendering cannot lose it.
@@ -74,6 +80,9 @@ def run(
             detail = getattr(e, "strerror", None) or str(e).strip().splitlines()[0]
             typer.echo(f"{json_out}: cannot write the scorecard: {detail}", err=True)
             output_failed = True
+
+    for warning in scorecard.warnings:
+        typer.echo(warning, err=True)
 
     if scorecard.harness_errors:
         count = len(scorecard.harness_errors)

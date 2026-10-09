@@ -139,6 +139,91 @@ def test_missing_suite_cwd_is_refused_even_with_command(tmp_path, monkeypatch):
     assert str(missing.resolve()) in line
 
 
+# N8: every test is checked against the server's tool list before any test runs.
+def _preflight_suite(tmp_path: Path, test: str, *server_args: str) -> Path:
+    args = ", ".join(["examples/broken_server.py", *server_args])
+    path = tmp_path / "suite.yaml"
+    path.write_text(
+        f"name: s\nserver: {{command: python, args: [{args}], cwd: '{REPO.as_posix()}'}}\n"
+        f"tests:\n  - {test}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _refusal(result, suite: Path) -> str:
+    assert result.exit_code == 2, result.output
+    assert result.stdout == ""
+    [line] = result.stderr.splitlines()
+    assert line.startswith(f"{suite}: ")
+    return line
+
+
+def test_unknown_tool_is_refused_before_any_test_runs(tmp_path):
+    suite = _preflight_suite(tmp_path, "{id: gone, tool: reed_file, expect: {type: is_error}}")
+    line = _refusal(_run(str(suite)), suite)
+    assert "tests[0] (id 'gone'): tool 'reed_file' is not on the server" in line
+    assert "(did you mean 'read_file'?)" in line
+
+
+def test_unknown_tool_flag_credits_the_server_s_rejection(tmp_path):
+    test = "{id: gone, tool: no_such_tool, unknown_tool: true, expect: {type: is_error}}"
+    out = tmp_path / "out.json"
+    result = _run(str(_preflight_suite(tmp_path, test)), "--json", str(out))
+    assert result.exit_code == 0, result.output
+    [graded] = json.loads(out.read_text(encoding="utf-8"))["results"]
+    assert graded["verdict"] == "pass"
+    assert graded["reason"] == 'server returned an error as expected: "unknown tool no_such_tool"'
+
+
+def test_misspelled_argument_is_refused_with_a_hint(tmp_path):
+    # Before the preflight this passed: read_file's missing `path` was the "rejection".
+    test = "{id: typo, tool: read_file, arguments: {pth: a.txt}, expect: {type: is_error}}"
+    suite = _preflight_suite(tmp_path, test)
+    line = _refusal(_run(str(suite)), suite)
+    assert "arguments.pth: not an argument of tool 'read_file' (did you mean 'path'?)" in line
+
+
+def test_wrong_type_argument_on_a_success_test_is_refused(tmp_path):
+    test = "{id: num, tool: echo, arguments: {text: 5}, expect: {type: no_error}}"
+    suite = _preflight_suite(tmp_path, test)
+    assert "arguments.text: 5 is not of type 'string'" in _refusal(_run(str(suite)), suite)
+
+
+def test_failed_tools_list_is_refused(tmp_path):
+    test = "{id: e, tool: echo, arguments: {text: hi}, expect: {type: no_error}}"
+    suite = _preflight_suite(tmp_path, test, "--fail-tools-list")
+    assert "tools/list" in _refusal(_run(str(suite)), suite)
+
+
+def test_a_paginated_tool_list_is_read_to_the_end(tmp_path):
+    # Three tools per page: method_missing is on the fourth and last page.
+    test = "{id: m, tool: method_missing, expect: {type: is_error}}"
+    result = _run(str(_preflight_suite(tmp_path, test, "--page-size", "'3'")))
+    assert result.exit_code == 1, result.output  # -32601 is not a rejection
+    assert "not on the server" not in result.output
+
+
+def test_unusable_tool_schema_warns_and_still_runs(tmp_path):
+    test = "{id: odd, tool: bad_input_schema, arguments: {n: 1}, expect: {type: no_error}}"
+    out = tmp_path / "out.json"
+    result = _run(str(_preflight_suite(tmp_path, test)), "--json", str(out))
+    assert result.exit_code == 0, result.output
+    [warning] = result.stderr.splitlines()
+    assert warning.startswith("warning: tool 'bad_input_schema' has an unusable inputSchema")
+    assert json.loads(out.read_text(encoding="utf-8"))["warnings"] == [warning]
+
+
+def test_off_spec_tool_list_is_refused_naming_the_spot(tmp_path):
+    # An inputSchema without type "object" breaks the MCP tools/list shape: that is
+    # a malformed reply, so the run is refused, with the field that broke it.
+    test = "{id: e, tool: echo, arguments: {text: hi}, expect: {type: no_error}}"
+    suite = _preflight_suite(tmp_path, test, "--off-spec-tool")
+    line = _refusal(_run(str(suite)), suite)
+    assert "tools/list failed: malformed reply on page 1: tools[" in line
+    assert "].inputSchema.type:" in line
+
+
 def test_render_failure_keeps_the_json_and_exits_2(tmp_path, monkeypatch):
     # Fault injection: once report text is escaped no real rendering crash is
     # known, so rendering is made to raise. The connector is not touched.

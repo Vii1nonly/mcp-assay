@@ -39,6 +39,10 @@ class TestCase(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     category: str = "correctness"
     description: str = ""
+    # is_error tests only: the tool, or an argument name, is meant to be unknown to
+    # the server, so the preflight lets it through instead of refusing the suite.
+    unknown_tool: bool = False
+    unknown_arguments: bool = False
 
 
 class ExecutionResult(BaseModel):
@@ -74,6 +78,8 @@ class Scorecard(BaseModel):
     server_label: str
     protocol_version: str | None = None
     results: list[GradedResult] = Field(default_factory=list)
+    # Checks the preflight had to skip, such as a tool with an unusable inputSchema.
+    warnings: list[str] = Field(default_factory=list)
 
     @property
     def passed(self) -> int:

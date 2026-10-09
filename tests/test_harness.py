@@ -139,9 +139,10 @@ async def test_connector_runs_the_tests_in_order_on_one_session():
         TestCase(id="a", tool="echo", arguments={"text": "1"}, expect={"type": "no_error"}),
         TestCase(id="b", tool="strict_echo", expect={"type": "is_error"}),
     ]
-    results, protocol_version = await run_tests(
+    results, protocol_version, warnings = await run_tests(
         server.command, server.args, server.cwd, tests, 10.0
     )
+    assert warnings == []
     assert [r.test_case.id for r in results] == ["a", "b"]
     assert [r.session for r in results] == [1, 1]
     assert results[1].rpc_error_code == -32602

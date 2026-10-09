@@ -13,6 +13,7 @@ from mcp.client.stdio import stdio_client
 from pydantic import ValidationError
 
 from .models import ExecutionResult, TestCase
+from .preflight import PreflightError, check, one_line, refusal
 
 # The SDK raises MCPError both for a real JSON-RPC error reply and for its own
 # local failures, which it reports with these codes. A server may legitimately
@@ -37,17 +38,100 @@ async def open_stdio_session(command: str, args: list[str], cwd: str | None = No
 
 async def run_tests(
     command: str, args: list[str], cwd: str | None, tests: list[TestCase], timeout: float
-) -> tuple[list[ExecutionResult], str]:
-    """Run every test case in order on one server session.
+) -> tuple[list[ExecutionResult], str, list[str]]:
+    """Check every test against the server's tool list, then run them in order on
+    one server session.
 
-    Returns the execution results and the negotiated protocol version. The cwd
-    is used as given: suite loading has already resolved it.
+    Returns the execution results, the negotiated protocol version, and warnings
+    for preflight checks that had to be skipped. Raises PreflightError, before
+    any test runs, when a test does not fit the server. The cwd is used as
+    given: suite loading has already resolved it.
     """
     results = []
+    refused = None
     async with open_stdio_session(command, args, cwd) as (session, init_result):
-        for test_case in tests:
-            results.append(await run_test_case(session, test_case, timeout, session_number=1))
-    return results, init_result.protocol_version
+        try:
+            warnings = await _preflight(session, tests, timeout)
+        except PreflightError as e:
+            refused = e  # raised once the session is closed
+        else:
+            for test_case in tests:
+                results.append(await run_test_case(session, test_case, timeout, session_number=1))
+    if refused:
+        raise refused
+    return results, init_result.protocol_version, warnings
+
+
+async def _preflight(session: ClientSession, tests: list[TestCase], timeout: float) -> list[str]:
+    try:
+        tools = await list_tool_schemas(session, timeout)
+    except PreflightError:
+        raise
+    except TimeoutError:
+        raise PreflightError(f"tools/list failed: not finished within {timeout}s") from None
+    except MCPError as e:
+        if e.code in _SDK_LOCAL_CODES:
+            # The SDK's own code: the server never sent this error.
+            detail = f"the connection closed before the server answered ({one_line(e.message)})"
+        else:
+            detail = f"JSON-RPC error {e.code}: {one_line(e.message)}"
+        raise PreflightError(f"tools/list failed: {detail}") from None
+    except Exception as e:  # noqa: BLE001
+        # Any other failure is still a server that cannot be checked: refuse the run.
+        raise PreflightError(f"tools/list failed: {type(e).__name__}: {one_line(e)}") from None
+    preflight = check(tests, tools)
+    if preflight.problems:
+        raise PreflightError(refusal(preflight.problems))
+    return preflight.warnings
+
+
+# More pages than any real tool list needs; a server past this never stops paging.
+_MAX_TOOL_PAGES = 1000
+
+
+async def list_tool_schemas(session, timeout: float) -> dict[str, dict]:
+    """Every tool the server lists, as name -> inputSchema, following pagination.
+
+    Sent as a raw tools/list rather than session.list_tools(), which can drop
+    tools and caches per-tool state: the preflight checks what the server sent.
+    The whole listing, every page, must finish within `timeout`.
+    """
+    tools: dict[str, dict] = {}
+    cursor = None
+    seen = set()
+    async with asyncio.timeout(timeout):
+        for page_number in range(1, _MAX_TOOL_PAGES + 1):
+            params = None if cursor is None else types.PaginatedRequestParams(cursor=cursor)
+            request = types.ListToolsRequest(params=params)
+            try:
+                page = await session.send_request(request, types.ListToolsResult)
+            except ValidationError as e:
+                # The reply breaks the MCP tools/list shape (for example an inputSchema
+                # without type "object"): name the spot so the server can be fixed.
+                raise PreflightError(
+                    f"tools/list failed: malformed reply on page {page_number}: {_spot(e)}"
+                ) from None
+            for tool in page.tools:
+                tools.setdefault(tool.name, tool.input_schema)
+            cursor = page.next_cursor
+            if cursor is None:
+                return tools
+            if cursor in seen:
+                raise PreflightError(
+                    f"tools/list failed: the server sent cursor {cursor!r} twice,"
+                    " so its tool list never ends"
+                )
+            seen.add(cursor)
+    raise PreflightError(
+        f"tools/list failed: more than {_MAX_TOOL_PAGES} pages, so its tool list never ends"
+    )
+
+
+def _spot(error: ValidationError) -> str:
+    """Where the first validation error is, as `tools[3].inputSchema.type: message`."""
+    first = error.errors()[0]
+    at = "".join(f"[{p}]" if isinstance(p, int) else f".{p}" for p in first["loc"]).lstrip(".")
+    return f"{at}: {one_line(first['msg'])}" if at else one_line(first["msg"])
 
 
 async def run_test_case(

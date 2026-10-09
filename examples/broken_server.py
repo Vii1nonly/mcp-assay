@@ -19,8 +19,18 @@ Correct behaviour the harness must still credit:
 More bugs the harness must grade as failures:
   malformed_reply  answers with a result that breaks the CallToolResult shape.
   method_missing   answers with -32601, so it never evaluated the arguments.
+
+A bug the preflight must warn about rather than blame on the suite:
+  bad_input_schema declares an inputSchema that is not valid JSON Schema.
+
+Options, for testing the tools/list preflight:
+  --page-size N       serve tools/list in pages of N tools, linked by nextCursor.
+  --fail-tools-list   answer tools/list with a JSON-RPC error.
+  --off-spec-tool     also list a tool whose inputSchema lacks type "object",
+                      which breaks the MCP tools/list shape.
 """
 
+import argparse
 import json
 import os
 import sys
@@ -98,7 +108,20 @@ TOOLS = [
         "description": "Answers every call with -32601 Method not found.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "bad_input_schema",
+        "description": "Works, but declares a type JSON Schema does not have.",
+        "inputSchema": {"type": "object", "properties": {"n": {"type": "nonsense"}}},
+    },
 ]
+
+
+# BUG: MCP requires every inputSchema to be an object schema (type "object").
+OFF_SPEC_TOOL = {
+    "name": "untyped",
+    "description": "Listed only with --off-spec-tool.",
+    "inputSchema": {"properties": {"a": {"type": "string"}}},
+}
 
 
 class RpcError(Exception):
@@ -168,10 +191,26 @@ def call_tool(name, arguments):
         # BUG: never looks at the arguments, so this is not a rejection of them.
         raise RpcError(-32601, "Method not found")
 
+    if name == "bad_input_schema":
+        return text_result("ok")
+
     return {"content": [{"type": "text", "text": f"unknown tool {name}"}], "isError": True}
 
 
-def handle(request):
+def list_tools(cursor, options):
+    if options.fail_tools_list:
+        raise RpcError(-32603, "Internal error: cannot list tools")
+    tools = TOOLS + [OFF_SPEC_TOOL] if options.off_spec_tool else TOOLS
+    if not options.page_size:
+        return {"tools": tools}
+    start = int(cursor or 0)
+    page = {"tools": tools[start : start + options.page_size]}
+    if start + options.page_size < len(tools):
+        page["nextCursor"] = str(start + options.page_size)
+    return page
+
+
+def handle(request, options):
     method = request.get("method")
     params = request.get("params") or {}
 
@@ -182,13 +221,18 @@ def handle(request):
             "serverInfo": {"name": "broken-server", "version": "0.1.0"},
         }
     if method == "tools/list":
-        return {"tools": TOOLS}
+        return list_tools(params.get("cursor"), options)
     if method == "tools/call":
         return call_tool(params.get("name"), params.get("arguments") or {})
     return None
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--page-size", type=int)
+    parser.add_argument("--fail-tools-list", action="store_true")
+    parser.add_argument("--off-spec-tool", action="store_true")
+    options, _ = parser.parse_known_args()  # other arguments are ignored
     sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     for line in sys.stdin:
         line = line.strip()
@@ -203,7 +247,7 @@ def main():
             continue  # a notification: no reply, which is correct behavior
 
         try:
-            result = handle(request)
+            result = handle(request, options)
         except RpcError as exc:
             error = {"code": exc.code, "message": exc.message}
             send({"jsonrpc": "2.0", "id": request["id"], "error": error})

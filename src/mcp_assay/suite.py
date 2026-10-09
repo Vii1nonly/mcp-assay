@@ -105,6 +105,12 @@ def _rule_problems(suite: Suite, data) -> list[str]:
             problems += [
                 f"{_where(at + sub, data)}: {msg}" for sub, msg in _schema_problems(schema)
             ]
+        for flag in ("unknown_tool", "unknown_arguments"):
+            # Outside is_error the opt-out could only hide a typo behind a verdict.
+            if getattr(test, flag) and test.expect.type != "is_error":
+                problems.append(
+                    f"{_where(('tests', i, flag), data)}: only is_error tests may set it"
+                )
         if test.id in first_use:
             used = f"'{test.id}' is already used by tests[{first_use[test.id]}]"
             problems.append(f"{_where(('tests', i, 'id'), data)}: {used}")

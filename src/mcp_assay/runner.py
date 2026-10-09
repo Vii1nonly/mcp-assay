@@ -7,13 +7,14 @@ from .suite import ServerSpec, Suite
 
 
 async def run_suite(suite: Suite, server: ServerSpec, timeout: float = 10.0) -> Scorecard:
-    executions, protocol_version = await run_tests(
+    executions, protocol_version, warnings = await run_tests(
         server.command, server.args, server.cwd, suite.tests, timeout
     )
     return Scorecard(
         server_label=server.label,
         protocol_version=protocol_version,
         results=[grade_safely(execution) for execution in executions],
+        warnings=warnings,
     )
 
 

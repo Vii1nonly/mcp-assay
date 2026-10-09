@@ -14,6 +14,7 @@ src/mcp_assay/
   models.py     the four objects: TestCase -> ExecutionResult -> GradedResult -> Scorecard
   suite.py      loads suite YAML into TestCase objects
   connector.py  the ONLY module that touches the MCP protocol
+  preflight.py  checks every test against the server's tools/list (pure, no protocol types)
   runner.py     has the connector run the suite, then grades each result
   graders.py    one function per check type, dispatched via CHECKS
   schemas.py    JSON Schema rules (draft, keywords, formats) shared by suite.py and graders.py
@@ -69,12 +70,11 @@ sleeps 5s, so the default 10s timeout hides it).
 - **Defect 1 (the test after a timeout inherits the stall): design decided in
   `docs/adr/0001-recovery-after-timeout.md` (accepted), not yet implemented.** Follow
   that ADR; ask me before deviating from it.
-- **Still open:** an `is_error` test with an unknown tool name passes (needs a
-  `tools/list` preflight; ask first). So does one with a misspelled argument name
-  (`pth:` for `path:`): the server rejects the call for the missing argument and the
-  rejection is credited. YAML-converted values (unquoted yes/no/on/off/y/n, dates) are
-  now refused when the suite loads. The v0.1.2 preflight must still check each test's
-  argument names, and value types, against that tool's `inputSchema`.
+- **Fixed (N8, v0.1.2):** an `is_error` test with an unknown tool name, or a
+  misspelled argument name (`pth:` for `path:`), no longer passes. The `tools/list`
+  preflight refuses the run before any test executes, unless the test opts out with
+  `unknown_tool` / `unknown_arguments` (allowed on `is_error` only). Success tests'
+  arguments are validated against the tool's `inputSchema`.
 - **Still open:** the MCP Python SDK turns an unexpected tool exception into a result
   with `isError: true`, so `is_error` credits a crash as a rejection when it does not
   reach the wire as JSON-RPC -32603. Message assertions (v0.2) are the planned fix.

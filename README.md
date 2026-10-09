@@ -27,7 +27,7 @@ uv run mcp-assay tools npx -- -y @modelcontextprotocol/server-filesystem .
 uv run mcp-assay run suites/filesystem.yaml --json scorecard.json
 ```
 
-The exit code is non-zero when any test fails or is inconclusive, so it works in CI. It is 1 for a failed or inconclusive test. It is 2 for a suite that cannot be read, a `--json` path that cannot be written, or a scorecard that cannot be displayed; the verdicts are kept wherever they could be delivered.
+The exit code is non-zero when any test fails or is inconclusive, so it works in CI. It is 1 for a failed or inconclusive test. It is 2 for a suite that cannot be read, a suite whose tests do not fit the server's tool list (see [Writing a suite](#writing-a-suite)), a `--json` path that cannot be written, or a scorecard that cannot be displayed; the verdicts are kept wherever they could be delivered.
 
 If the harness itself fails while grading a test, that test alone is reported as an inconclusive harness error, in its own section, with a warning that counts the affected tests. This is a harness bug, not a server result.
 
@@ -53,6 +53,7 @@ suite YAML  --load-->  TestCase
 | --- | --- |
 | `suite.py` | parses suite YAML into `TestCase` objects |
 | `connector.py` | spawns the server and runs every case over one session, speaking JSON-RPC over stdio |
+| `preflight.py` | checks every test against the server's tool list before any test runs |
 | `runner.py` | grades every result the connector returns, then aggregates |
 | `graders.py` | decides pass or fail |
 | `schemas.py` | JSON Schema rules shared by loading and grading |
@@ -151,7 +152,33 @@ Relative paths in `args` are read by the server itself, from its `cwd`.
 
 Each test has an `id` (unique in the suite), a `tool`, its `arguments` (default `{}`) and an `expect` block. `expect.type` is one of the checks above; `schema_valid` also takes a `schema`. `category` (default `correctness`) groups the scorecard, and `description` is free text.
 
-The suite's own keys and schemas are checked strictly when it loads. A misspelled key, a misplaced `schema`, a duplicate id or a broken schema stops the run before the server starts, with one line naming the file and the spot. Argument names and values inside `arguments` are passed through as written: only the server checks them.
+The suite's own keys and schemas are checked strictly when it loads. A misspelled key, a misplaced `schema`, a duplicate id or a broken schema stops the run before the server starts, with one line naming the file and the spot.
+
+Once the server has started, and before any test runs, every test is checked against the tools the server lists (`tools/list`, every page). The run stops with exit code 2 and one line when:
+
+- a test names a tool the server does not list;
+- an argument name is not in the tool's `inputSchema` `properties` (nor matched by its `patternProperties`);
+- a `no_error` or `schema_valid` test sends arguments the tool's `inputSchema` rejects;
+- the server cannot answer `tools/list`, or its reply breaks the MCP shape (for example a tool whose `inputSchema` lacks `type: "object"`); the line names the spot.
+
+Without this, a misspelled `pth:` in an `is_error` test would pass: the server rejects the call for the missing `path`, and that rejection would be credited. An `is_error` test may still send values the schema rejects; that is what it is for. If a tool's own `inputSchema` is not valid JSON Schema, its tests run without these checks and a warning names the tool.
+
+When an `is_error` test means to call a tool the server does not have, or to send an argument name the tool does not declare, it says so. Only `is_error` tests may set these keys:
+
+```yaml
+- id: unknown-tool-is-rejected
+  tool: no_such_tool
+  unknown_tool: true          # the tool is meant to be missing
+  expect:
+    type: is_error
+
+- id: unexpected-argument-is-rejected
+  tool: read_text_file
+  arguments: {path: README.md, colour: red}
+  unknown_arguments: true     # `colour` is meant to be unknown
+  expect:
+    type: is_error
+```
 
 ## Testing the harness itself
 
