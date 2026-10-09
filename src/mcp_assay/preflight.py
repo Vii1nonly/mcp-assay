@@ -12,6 +12,7 @@ never a protocol object.
 import difflib
 import re
 from typing import NamedTuple
+from urllib.parse import unquote
 
 from jsonschema.exceptions import SchemaError
 
@@ -99,18 +100,104 @@ def _argument_problems(test: TestCase, schema: dict) -> list[str]:
 
 
 def _name_problems(test: TestCase, schema: dict) -> list[str]:
-    names = schema.get("properties")
-    if not isinstance(names, dict) or not names:
-        return []  # the schema lists no argument names to check against
-    patterns = schema.get("patternProperties")
-    patterns = list(patterns) if isinstance(patterns, dict) else []
+    declared = _declared_names(schema)
+    if declared is None:
+        return []  # the schema allows names the harness cannot rule out
+    names, patterns = declared
     problems = []
     for name in test.arguments:
         if name in names or any(re.search(pattern, name) for pattern in patterns):
             continue
-        hint = _unknown_hint(test, name, names, "unknown_arguments")
+        if names or patterns:
+            hint = _unknown_hint(test, name, names, "unknown_arguments")
+        else:
+            hint = " (it takes no arguments)"
         problems.append(f"arguments.{name}: not an argument of tool '{test.tool}'{hint}")
     return problems
+
+
+# Keywords whose subschemas apply to the same object, so names they declare are
+# argument names too. `dependencies` is the pre-2019 spelling of dependentSchemas.
+_IN_PLACE_LISTS = ("allOf", "anyOf", "oneOf")
+_IN_PLACE_ONE = ("then", "else")
+_IN_PLACE_MAPS = ("dependentSchemas", "dependencies")
+
+
+def _declared_names(schema: dict) -> tuple[set[str], list[str]] | None:
+    """Every argument name and name pattern the schema declares, or None when unsure.
+
+    Names come from `properties` and `patternProperties` of the root and of every
+    part reached through in-place keywords and local `$ref`s. The answer is None,
+    so names are not checked, when a reached part cannot be resolved, is not an
+    object schema, or allows any name. A tool that declares nothing and sets
+    `additionalProperties: false` takes no arguments: empty sets.
+    """
+    names: set[str] = set()
+    patterns: list[str] = []
+    pending, visited = [schema], set()
+    while pending:
+        part = pending.pop()
+        if id(part) in visited:
+            continue  # a reference loop: this part is already counted
+        visited.add(id(part))
+        if not isinstance(part, dict):
+            return None  # a boolean schema, or a broken one
+        if part is not schema and "$id" in part:
+            return None  # an embedded resource: its local $refs are its own
+        properties = part.get("properties")
+        pattern_map = part.get("patternProperties")
+        declares = False
+        if isinstance(properties, dict) and properties:
+            names.update(properties)
+            declares = True
+        if isinstance(pattern_map, dict) and pattern_map:
+            patterns.extend(pattern_map)
+            declares = True
+        # allOf/anyOf/oneOf and $ref always apply; then/else and dependency schemas
+        # only when a condition holds, so they add names but never stand in for them.
+        composed = []
+        for keyword in _IN_PLACE_LISTS:
+            if isinstance(part.get(keyword), list):
+                composed += part[keyword]
+        if "$ref" in part:
+            target = _resolve_local(schema, part["$ref"])
+            if target is None:
+                return None  # remote, an anchor, or nothing there
+            composed.append(target)
+        conditional = [part[keyword] for keyword in _IN_PLACE_ONE if keyword in part]
+        for keyword in _IN_PLACE_MAPS:
+            if isinstance(part.get(keyword), dict):
+                names.update(part[keyword])  # a dependency is keyed by an argument name
+                # dependencies may map a name to a list of names: not a schema.
+                conditional += [v for v in part[keyword].values() if not isinstance(v, list)]
+        open_names = part.get("additionalProperties", True) is not False
+        # A part that only points elsewhere ($ref, allOf...) adds no names itself;
+        # one that declares nothing and leaves extra names open allows any name.
+        if not declares and open_names and (not composed or "additionalProperties" in part):
+            return None
+        pending += composed + conditional
+    return names, patterns
+
+
+def _resolve_local(root: dict, ref) -> object | None:
+    """The part of `root` a local JSON Pointer reference ("#/$defs/A") names, or None."""
+    if not isinstance(ref, str) or not ref.startswith("#"):
+        return None
+    pointer = unquote(ref[1:])
+    if pointer == "":
+        return root
+    if not pointer.startswith("/"):
+        return None  # an anchor name, not a pointer
+    node = root
+    for token in pointer[1:].split("/"):
+        token = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(node, dict) and token in node:
+            node = node[token]
+        elif isinstance(node, list) and token.isdigit() and int(token) < len(node):
+            node = node[int(token)]
+        else:
+            return None
+    return node
 
 
 def _value_problems(test: TestCase, schema: dict) -> list[str]:

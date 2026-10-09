@@ -80,6 +80,178 @@ def test_a_schema_that_lists_no_properties_gets_no_name_check(tool):
     assert _problems(_test(tool, arguments={"anything": 1})) == []
 
 
+# --- argument names declared outside root `properties` ----------------------------
+
+_STRING = {"type": "string"}
+
+
+def test_names_declared_only_in_all_of_are_accepted():
+    schema = {
+        "type": "object",
+        "properties": {"mode": _STRING},
+        "allOf": [{"properties": {"extra": _STRING}}],
+    }
+    ok = _test("t", check_type="no_error", arguments={"mode": "a", "extra": "b"})
+    assert _problems(ok, tools={"t": schema}) == []
+    [problem] = _problems(_test("t", arguments={"extr": "b"}), tools={"t": schema})
+    assert "arguments.extr: not an argument of tool 't' (did you mean 'extra'?)" in problem
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {
+            "$ref": "#/$defs/Args",
+            "$defs": {"Args": {"type": "object", "properties": {"path": _STRING}}},
+        },
+        {  # the shape zod-to-json-schema emits
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$ref": "#/definitions/Args",
+            "definitions": {"Args": {"type": "object", "properties": {"path": _STRING}}},
+        },
+    ],
+)
+def test_a_typo_behind_a_root_ref_is_refused(schema):
+    [problem] = _problems(_test("t", arguments={"pth": "a"}), tools={"t": schema})
+    assert "arguments.pth: not an argument of tool 't' (did you mean 'path'?)" in problem
+    assert _problems(_test("t", arguments={"path": "a"}), tools={"t": schema}) == []
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"properties": {"path": _STRING}, "allOf": [{"$ref": "#"}]},
+        {
+            "$ref": "#/$defs/A",
+            "$defs": {"A": {"properties": {"path": _STRING}, "anyOf": [{"$ref": "#/$defs/A"}]}},
+        },
+    ],
+)
+def test_a_ref_loop_is_followed_once(schema):
+    [problem] = _problems(_test("t", arguments={"pth": "a"}), tools={"t": schema})
+    assert "(did you mean 'path'?)" in problem
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"properties": {"a": {}}, "allOf": [{"$ref": "#/$defs/missing"}]},
+        {"properties": {"a": {}}, "allOf": [{"$ref": "https://example.com/remote.json"}]},
+        {"properties": {"a": {}}, "anyOf": [True]},
+        {"properties": {"a": {}}, "anyOf": [{"required": ["a"]}]},
+    ],
+    ids=["missing-ref", "remote-ref", "boolean-branch", "branch-allows-any-name"],
+)
+def test_a_part_that_cannot_be_followed_skips_the_name_check(schema):
+    # Never refuse when unsure: a name the harness cannot rule out is let through.
+    assert _problems(_test("t", arguments={"zzz": 1}), tools={"t": schema}) == []
+
+
+_DRAFT_07 = "http://json-schema.org/draft-07/schema#"
+
+
+@pytest.mark.parametrize(
+    ("schema", "arguments"),
+    [
+        (
+            {"type": "object", "dependentSchemas": {"card": {"properties": {"billing": {}}}}},
+            {"card": 1, "billing": 2},
+        ),
+        (
+            {
+                "$schema": _DRAFT_07,
+                "type": "object",
+                "dependencies": {"card": {"properties": {"billing": {}}}},
+            },
+            {"card": 1, "billing": 2},
+        ),
+        (
+            {
+                "type": "object",
+                "if": {"properties": {"kind": {"const": "a"}}},
+                "then": {"properties": {"a_opt": {}}},
+            },
+            {"kind": "a", "a_opt": 1},
+        ),
+        ({"type": "object", "then": {"properties": {"a": {}}}}, {"b": 1}),
+    ],
+    ids=["dependentSchemas", "dependencies", "if-then", "then-without-if"],
+)
+def test_a_root_with_only_conditional_parts_gets_no_name_check(schema, arguments):
+    # Conditional parts apply only sometimes, so the names they declare are not
+    # every allowed name: an open root with nothing else allows any name.
+    test = _test("t", check_type="no_error", arguments=arguments)
+    assert _problems(test, tools={"t": schema}) == []
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"properties": {"x": {}}, "oneOf": [{"properties": {"limit": {}}}]},
+        {"properties": {"x": {}}, "if": {"required": ["x"]}, "then": {"properties": {"limit": {}}}},
+        {"properties": {"x": {}}, "if": {"required": ["x"]}, "else": {"properties": {"limit": {}}}},
+        {"properties": {"x": {}}, "dependentSchemas": {"x": {"properties": {"limit": {}}}}},
+        {"properties": {"x": {}}, "dependentSchemas": {"limit": {"properties": {"x": {}}}}},
+        {
+            "properties": {"x": {}},
+            "allOf": [{"$ref": "#/$defs/a~1b"}],
+            "$defs": {"a/b": {"properties": {"limit": {}}}},
+        },
+        {
+            "properties": {"x": {}},
+            "allOf": [{"$ref": "#/%24defs/L"}],
+            "$defs": {"L": {"properties": {"limit": {}}}},
+        },
+    ],
+    ids=[
+        "oneOf",
+        "then",
+        "else",
+        "dependentSchemas-value",
+        "dependentSchemas-key",
+        "pointer-escape",
+        "pointer-percent",
+    ],
+)
+def test_names_from_every_followed_part_are_declared(schema):
+    assert _problems(_test("t", arguments={"limit": 1}), tools={"t": schema}) == []
+    [problem] = _problems(_test("t", arguments={"limt": 1}), tools={"t": schema})
+    assert "(did you mean 'limit'?)" in problem
+
+
+def test_a_ref_inside_an_embedded_resource_skips_the_name_check():
+    # Under a nested $id, "#/$defs/B" means that resource's B, not the root's.
+    schema = {
+        "type": "object",
+        "$ref": "#/$defs/A",
+        "$defs": {
+            "A": {
+                "$id": "https://example.com/a",
+                "allOf": [{"$ref": "#/$defs/B"}],
+                "$defs": {"B": {"properties": {"good": {}}}},
+            },
+            "B": {"properties": {"other": {}}},
+        },
+    }
+    assert _problems(_test("t", arguments={"good": 1}), tools={"t": schema}) == []
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        {"type": "object", "additionalProperties": False},
+    ],
+)
+def test_a_tool_that_takes_no_arguments_refuses_any_name(schema):
+    tools = {"none": schema}
+    [problem] = _problems(_test("none", arguments={"x": 1}), tools=tools)
+    assert "arguments.x: not an argument of tool 'none' (it takes no arguments)" in problem
+    flagged = _test("none", arguments={"x": 1}, unknown_arguments=True)
+    assert _problems(flagged, tools=tools) == []
+    assert _problems(_test("none"), tools=tools) == []
+
+
 # --- argument values for tests that expect success --------------------------------
 
 

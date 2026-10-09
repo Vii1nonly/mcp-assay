@@ -344,3 +344,24 @@ def test_tools_lists_a_real_server_with_its_output_schema():
     assert result.exit_code == 0, result.output
     after_status = result.stdout.split("get_status", 1)[1]
     assert "output schema:" in after_status.split("\n\n", 1)[0]
+
+
+def test_tools_refuses_a_failed_listing_in_one_line():
+    server = str(REPO / "examples" / "broken_server.py")
+    args = ["tools", "--timeout", "5", sys.executable, "--", server, "--fail-tools-list"]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    [line] = result.stderr.splitlines()
+    assert line.startswith("tools/list failed: JSON-RPC error -32603")
+
+
+def test_tools_lists_every_page():
+    # Three tools per page: bad_input_schema is alone on the last of four pages.
+    server = str(REPO / "examples" / "broken_server.py")
+    args = ["tools", sys.executable, "--", server, "--page-size", "3"]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.output
+    names = [line.split()[0] for line in result.stdout.splitlines() if line and line[0].isalpha()]
+    listed = {name for name in names if name not in ("input", "output")}
+    assert {"echo", "method_missing", "bad_input_schema"} <= listed

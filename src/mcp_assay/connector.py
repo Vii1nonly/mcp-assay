@@ -63,8 +63,28 @@ async def run_tests(
 
 
 async def _preflight(session: ClientSession, tests: list[TestCase], timeout: float) -> list[str]:
+    preflight = check(tests, await list_tool_schemas(session, timeout))
+    if preflight.problems:
+        raise PreflightError(refusal(preflight.problems))
+    return preflight.warnings
+
+
+async def list_tool_schemas(session, timeout: float) -> dict[str, dict]:
+    """Every tool the server lists, as plain data: name -> inputSchema."""
+    tools: dict[str, dict] = {}
+    for tool in await fetch_tools(session, timeout):
+        tools.setdefault(tool.name, tool.input_schema)
+    return tools
+
+
+async def fetch_tools(session, timeout: float) -> list[types.Tool]:
+    """Every tool the server lists, following pagination.
+
+    Any failure (an error reply, no answer in time, a malformed or endless
+    listing) is raised as a one-line PreflightError naming tools/list.
+    """
     try:
-        tools = await list_tool_schemas(session, timeout)
+        return await _fetch_pages(session, timeout)
     except PreflightError:
         raise
     except TimeoutError:
@@ -79,24 +99,18 @@ async def _preflight(session: ClientSession, tests: list[TestCase], timeout: flo
     except Exception as e:  # noqa: BLE001
         # Any other failure is still a server that cannot be checked: refuse the run.
         raise PreflightError(f"tools/list failed: {type(e).__name__}: {one_line(e)}") from None
-    preflight = check(tests, tools)
-    if preflight.problems:
-        raise PreflightError(refusal(preflight.problems))
-    return preflight.warnings
 
 
 # More pages than any real tool list needs; a server past this never stops paging.
 _MAX_TOOL_PAGES = 1000
 
 
-async def list_tool_schemas(session, timeout: float) -> dict[str, dict]:
-    """Every tool the server lists, as name -> inputSchema, following pagination.
-
-    Sent as a raw tools/list rather than session.list_tools(), which can drop
+async def _fetch_pages(session, timeout: float) -> list[types.Tool]:
+    """Sent as a raw tools/list rather than session.list_tools(), which can drop
     tools and caches per-tool state: the preflight checks what the server sent.
     The whole listing, every page, must finish within `timeout`.
     """
-    tools: dict[str, dict] = {}
+    tools: list[types.Tool] = []
     cursor = None
     seen = set()
     async with asyncio.timeout(timeout):
@@ -111,8 +125,7 @@ async def list_tool_schemas(session, timeout: float) -> dict[str, dict]:
                 raise PreflightError(
                     f"tools/list failed: malformed reply on page {page_number}: {_spot(e)}"
                 ) from None
-            for tool in page.tools:
-                tools.setdefault(tool.name, tool.input_schema)
+            tools += page.tools
             cursor = page.next_cursor
             if cursor is None:
                 return tools

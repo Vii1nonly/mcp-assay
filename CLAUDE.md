@@ -75,6 +75,9 @@ sleeps 5s, so the default 10s timeout hides it).
   preflight refuses the run before any test executes, unless the test opts out with
   `unknown_tool` / `unknown_arguments` (allowed on `is_error` only). Success tests'
   arguments are validated against the tool's `inputSchema`.
+- **Still open:** A server whose tools/list contains one off-spec tool cannot be tested;
+  planned: fetch tools/list with a lenient reader and report the off-spec tool as a
+  finding (v0.2).
 - **Still open:** the MCP Python SDK turns an unexpected tool exception into a result
   with `isError: true`, so `is_error` credits a crash as a rejection when it does not
   reach the wire as JSON-RPC -32603. Message assertions (v0.2) are the planned fix.

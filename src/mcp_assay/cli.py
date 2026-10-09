@@ -108,18 +108,25 @@ def run(
 def tools(
     command: str = typer.Argument(..., help="Server command, e.g. 'python'."),
     args: list[str] = typer.Argument(None, help="Arguments to the server command."),
+    timeout: float = typer.Option(10.0, help="Seconds to wait for the whole tool list."),
 ):
-    """List the tools a server exposes. Useful when writing a new suite."""
-    from .connector import open_stdio_session
+    """List the tools a server exposes, every page. Useful when writing a new suite."""
+    from .connector import fetch_tools, open_stdio_session
 
     _safe_streams()
 
     async def _list():
         async with open_stdio_session(command, list(args or [])) as (session, _):
-            return await session.list_tools()
+            try:
+                return await fetch_tools(session, timeout), None
+            except PreflightError as e:
+                return None, e  # reported once the session is closed
 
-    result = asyncio.run(_list())
-    for tool in result.tools:
+    tools, failure = asyncio.run(_list())
+    if failure:
+        typer.echo(str(failure), err=True)
+        raise typer.Exit(code=2)
+    for tool in tools:
         typer.echo(_describe_tool(tool))
 
 

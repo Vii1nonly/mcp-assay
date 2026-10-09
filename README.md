@@ -157,8 +157,8 @@ The suite's own keys and schemas are checked strictly when it loads. A misspelle
 Once the server has started, and before any test runs, every test is checked against the tools the server lists (`tools/list`, every page). The run stops with exit code 2 and one line when:
 
 - a test names a tool the server does not list;
-- an argument name is not in the tool's `inputSchema` `properties` (nor matched by its `patternProperties`);
-- a `no_error` or `schema_valid` test sends arguments the tool's `inputSchema` rejects;
+- an argument name is not one the tool's `inputSchema` declares. Declared names are those in `properties` and `patternProperties`, at the root and in every part reached through `allOf`, `anyOf`, `oneOf`, `then`, `else`, `dependentSchemas` and local `$ref`s. A tool that declares none and sets `additionalProperties: false` takes no arguments, so any name is refused. When the schema allows any name, or a part cannot be followed (a remote `$ref`, say), names are not checked;
+- a `no_error` or `schema_valid` test sends argument values the tool's `inputSchema` rejects. Values are checked under the schema's own draft, including `format`: a `format: date-time` field given `"2026-10-09"` is refused;
 - the server cannot answer `tools/list`, or its reply breaks the MCP shape (for example a tool whose `inputSchema` lacks `type: "object"`); the line names the spot.
 
 Without this, a misspelled `pth:` in an `is_error` test would pass: the server rejects the call for the missing `path`, and that rejection would be credited. An `is_error` test may still send values the schema rejects; that is what it is for. If a tool's own `inputSchema` is not valid JSON Schema, its tests run without these checks and a warning names the tool.
