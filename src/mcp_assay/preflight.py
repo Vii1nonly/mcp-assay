@@ -119,7 +119,7 @@ def _name_problems(test: TestCase, schema: dict) -> list[str]:
 # Keywords whose subschemas apply to the same object, so names they declare are
 # argument names too. `dependencies` is the pre-2019 spelling of dependentSchemas.
 _IN_PLACE_LISTS = ("allOf", "anyOf", "oneOf")
-_IN_PLACE_ONE = ("then", "else")
+_IN_PLACE_ONE = ("if", "then", "else")
 _IN_PLACE_MAPS = ("dependentSchemas", "dependencies")
 
 
@@ -127,55 +127,61 @@ def _declared_names(schema: dict) -> tuple[set[str], list[str]] | None:
     """Every argument name and name pattern the schema declares, or None when unsure.
 
     Names come from `properties` and `patternProperties` of the root and of every
-    part reached through in-place keywords and local `$ref`s. The answer is None,
-    so names are not checked, when a reached part cannot be resolved, is not an
-    object schema, or allows any name. A tool that declares nothing and sets
-    `additionalProperties: false` takes no arguments: empty sets.
+    part reached through in-place keywords and local `$ref`s, plus the names a
+    dependency is keyed by (accepted, but they never turn the check on alone). A
+    part that declares nothing (only `required`, say) adds nothing. The answer is
+    None, so names are not checked, when:
+    - a reached part sets `additionalProperties` to true or to a schema;
+    - a reached part is the schema `true`, or not a schema at all;
+    - a `$ref` cannot be resolved, or a nested `$id` changes what it means;
+    - no part declares a name and none sets `additionalProperties: false`.
+    A tool that declares nothing and sets `additionalProperties: false` takes no
+    arguments: empty sets.
     """
     names: set[str] = set()
     patterns: list[str] = []
+    declares = False  # some part lists names in properties or patternProperties
+    closed = False  # some part sets additionalProperties: false
     pending, visited = [schema], set()
     while pending:
         part = pending.pop()
         if id(part) in visited:
             continue  # a reference loop: this part is already counted
         visited.add(id(part))
+        if part is False:
+            continue  # allows nothing, declares nothing
         if not isinstance(part, dict):
-            return None  # a boolean schema, or a broken one
+            return None  # the schema `true` (any name), or not a schema
         if part is not schema and "$id" in part:
             return None  # an embedded resource: its local $refs are its own
-        properties = part.get("properties")
-        pattern_map = part.get("patternProperties")
-        declares = False
-        if isinstance(properties, dict) and properties:
-            names.update(properties)
+        if "additionalProperties" in part:
+            if part["additionalProperties"] is not False:
+                return None  # extra names are allowed outright
+            closed = True
+        if isinstance(part.get("properties"), dict) and part["properties"]:
+            names.update(part["properties"])
             declares = True
-        if isinstance(pattern_map, dict) and pattern_map:
-            patterns.extend(pattern_map)
+        if isinstance(part.get("patternProperties"), dict) and part["patternProperties"]:
+            patterns.extend(part["patternProperties"])
             declares = True
-        # allOf/anyOf/oneOf and $ref always apply; then/else and dependency schemas
-        # only when a condition holds, so they add names but never stand in for them.
-        composed = []
         for keyword in _IN_PLACE_LISTS:
             if isinstance(part.get(keyword), list):
-                composed += part[keyword]
+                pending += part[keyword]
+        pending += [part[keyword] for keyword in _IN_PLACE_ONE if keyword in part]
+        for keyword in _IN_PLACE_MAPS:
+            if isinstance(part.get(keyword), dict):
+                # A dependency is keyed by an argument name: accepted, but on its
+                # own it does not list the names the tool takes.
+                names.update(part[keyword])
+                # dependencies may map a name to a list of names: not a schema.
+                pending += [v for v in part[keyword].values() if not isinstance(v, list)]
         if "$ref" in part:
             target = _resolve_local(schema, part["$ref"])
             if target is None:
                 return None  # remote, an anchor, or nothing there
-            composed.append(target)
-        conditional = [part[keyword] for keyword in _IN_PLACE_ONE if keyword in part]
-        for keyword in _IN_PLACE_MAPS:
-            if isinstance(part.get(keyword), dict):
-                names.update(part[keyword])  # a dependency is keyed by an argument name
-                # dependencies may map a name to a list of names: not a schema.
-                conditional += [v for v in part[keyword].values() if not isinstance(v, list)]
-        open_names = part.get("additionalProperties", True) is not False
-        # A part that only points elsewhere ($ref, allOf...) adds no names itself;
-        # one that declares nothing and leaves extra names open allows any name.
-        if not declares and open_names and (not composed or "additionalProperties" in part):
-            return None
-        pending += composed + conditional
+            pending.append(target)
+    if not declares and not closed:
+        return None  # the schema lists no argument names to check against
     return names, patterns
 
 

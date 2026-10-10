@@ -138,13 +138,69 @@ def test_a_ref_loop_is_followed_once(schema):
         {"properties": {"a": {}}, "allOf": [{"$ref": "#/$defs/missing"}]},
         {"properties": {"a": {}}, "allOf": [{"$ref": "https://example.com/remote.json"}]},
         {"properties": {"a": {}}, "anyOf": [True]},
-        {"properties": {"a": {}}, "anyOf": [{"required": ["a"]}]},
+        {"properties": {"a": {}}, "allOf": [{"additionalProperties": True}]},
+        {"properties": {"a": {}}, "additionalProperties": {"type": "integer"}},
+        {"type": "object", "$ref": "#/$defs/A", "$defs": {"A": {"$ref": "#/$defs/A"}}},
     ],
-    ids=["missing-ref", "remote-ref", "boolean-branch", "branch-allows-any-name"],
+    ids=[
+        "missing-ref",
+        "remote-ref",
+        "boolean-true-branch",
+        "branch-allows-any-name",
+        "additional-properties-schema",
+        "nothing-declared",
+    ],
 )
 def test_a_part_that_cannot_be_followed_skips_the_name_check(schema):
     # Never refuse when unsure: a name the harness cannot rule out is let through.
     assert _problems(_test("t", arguments={"zzz": 1}), tools={"t": schema}) == []
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {
+            "properties": {"mode": {}, "path": {}},
+            "if": {"properties": {"mode": {"const": "file"}}},
+            "then": {"required": ["path"]},
+        },
+        {
+            "properties": {"path": {}, "url": {}},
+            "oneOf": [{"required": ["path"]}, {"required": ["url"]}],
+        },
+        {"properties": {"path": {}}, "anyOf": [{"required": ["path"]}]},
+    ],
+    ids=["then-required", "oneOf-required", "anyOf-required"],
+)
+def test_a_part_that_declares_nothing_keeps_the_name_check(schema):
+    # A branch that only adds `required` allows no extra names: the typo is still caught.
+    [problem] = _problems(_test("t", arguments={"pth": "a"}), tools={"t": schema})
+    assert "arguments.pth: not an argument of tool 't' (did you mean 'path'?)" in problem
+
+
+def test_a_name_declared_only_in_if_is_accepted():
+    schema = {"properties": {"x": {}}, "if": {"properties": {"kind": {"const": "a"}}}}
+    assert _problems(_test("t", arguments={"kind": "a"}), tools={"t": schema}) == []
+
+
+def test_a_false_branch_declares_nothing_and_keeps_the_check():
+    schema = {"properties": {"path": {}}, "anyOf": [False, {"required": ["path"]}]}
+    [problem] = _problems(_test("t", arguments={"pth": "a"}), tools={"t": schema})
+    assert "(did you mean 'path'?)" in problem
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object", "dependencies": {"card": ["billing"]}},
+        {"type": "object", "dependentSchemas": {"card": {"required": ["billing"]}}},
+    ],
+)
+def test_dependency_keys_alone_do_not_turn_the_check_on(schema):
+    # A dependency's key is a name the tool knows, but it lists no other names,
+    # so with nothing declared in properties the check stays off.
+    test = _test("t", check_type="no_error", arguments={"card": 1, "billing": 2})
+    assert _problems(test, tools={"t": schema}) == []
 
 
 _DRAFT_07 = "http://json-schema.org/draft-07/schema#"
@@ -173,15 +229,18 @@ _DRAFT_07 = "http://json-schema.org/draft-07/schema#"
             },
             {"kind": "a", "a_opt": 1},
         ),
-        ({"type": "object", "then": {"properties": {"a": {}}}}, {"b": 1}),
     ],
-    ids=["dependentSchemas", "dependencies", "if-then", "then-without-if"],
+    ids=["dependentSchemas", "dependencies", "if-then"],
 )
-def test_a_root_with_only_conditional_parts_gets_no_name_check(schema, arguments):
-    # Conditional parts apply only sometimes, so the names they declare are not
-    # every allowed name: an open root with nothing else allows any name.
+def test_names_declared_only_in_conditional_parts_are_accepted(schema, arguments):
     test = _test("t", check_type="no_error", arguments=arguments)
     assert _problems(test, tools={"t": schema}) == []
+
+
+def test_a_name_no_part_declares_is_refused_even_beside_conditional_parts():
+    schema = {"type": "object", "then": {"properties": {"a": {}}}}
+    [problem] = _problems(_test("t", arguments={"b": 1}), tools={"t": schema})
+    assert "arguments.b: not an argument of tool 't'" in problem
 
 
 @pytest.mark.parametrize(
