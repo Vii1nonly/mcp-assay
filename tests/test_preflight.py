@@ -203,6 +203,122 @@ def test_dependency_keys_alone_do_not_turn_the_check_on(schema):
     assert _problems(test, tools={"t": schema}) == []
 
 
+# --- final N8 rules: only parts that always apply can close the tool -------------
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object", "anyOf": [{"additionalProperties": False}, {"required": ["path"]}]},
+        {"type": "object", "if": {"additionalProperties": False}, "then": {}},
+        # Beside an alternative that names nothing, so `path` is not accepted some other way.
+        {"type": "object", "anyOf": [{"additionalProperties": False}, {"type": "object"}]},
+        {"type": "object", "anyOf": [{"unevaluatedProperties": False}, {"type": "object"}]},
+    ],
+    ids=["closed-alternative", "closed-condition", "closed-beside-open", "unevaluated-beside-open"],
+)
+def test_a_closed_alternative_or_condition_does_not_close_the_tool(schema):
+    test = _test("t", check_type="no_error", arguments={"path": "x"})
+    assert _problems(test, tools={"t": schema}) == []
+
+
+def test_a_name_only_required_lists_is_accepted():
+    schema = {"if": {"properties": {"mode": {"const": "file"}}}, "then": {"required": ["path"]}}
+    ok = _test("t", check_type="no_error", arguments={"mode": "file", "path": "x"})
+    assert _problems(ok, tools={"t": schema}) == []
+    [problem] = _problems(_test("t", arguments={"pth": "x"}), tools={"t": schema})
+    assert "(did you mean 'path'?)" in problem
+
+
+@pytest.mark.parametrize("value", [True, {"type": "integer"}])
+def test_open_unevaluated_properties_skips_the_name_check(value):
+    schema = {"properties": {"a": {}}, "unevaluatedProperties": value}
+    assert _problems(_test("t", arguments={"zzz": 1}), tools={"t": schema}) == []
+
+
+def test_closed_unevaluated_properties_with_no_names_takes_no_arguments():
+    schema = {"type": "object", "unevaluatedProperties": False}
+    [problem] = _problems(_test("t", arguments={"x": 1}), tools={"t": schema})
+    assert "(it takes no arguments)" in problem
+
+
+def test_dependent_required_is_followed_like_dependencies():
+    schema = {"properties": {"a": {}}, "dependentRequired": {"b": ["c"]}}
+    test = _test("t", check_type="no_error", arguments={"a": 1, "b": 2, "c": 3})
+    assert _problems(test, tools={"t": schema}) == []
+    alone = {"type": "object", "dependentRequired": {"card": ["billing"]}}
+    test = _test("t", check_type="no_error", arguments={"card": 1, "billing": 2})
+    assert _problems(test, tools={"t": alone}) == []
+
+
+_CLOSED_A = {"A": {"additionalProperties": False}}
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"allOf": [{"additionalProperties": False}]},
+        {"allOf": [{"unevaluatedProperties": False}]},
+        {"$ref": "#/$defs/A", "$defs": _CLOSED_A},
+        {"$ref": "#/$defs/A", "$defs": {"A": {"unevaluatedProperties": False}}},
+        # One part reached both as an alternative and as an always-part, in each order.
+        {"anyOf": [{"$ref": "#/$defs/A"}], "allOf": [{"$ref": "#/$defs/A"}], "$defs": _CLOSED_A},
+        {"allOf": [{"$ref": "#/$defs/A"}], "anyOf": [{"$ref": "#/$defs/A"}], "$defs": _CLOSED_A},
+    ],
+    ids=[
+        "allOf",
+        "allOf-unevaluated",
+        "ref",
+        "ref-unevaluated",
+        "anyOf-then-allOf",
+        "allOf-then-anyOf",
+    ],
+)
+def test_a_part_that_always_applies_closes_the_tool(schema):
+    [problem] = _problems(_test("t", arguments={"x": 1}), tools={"t": schema})
+    assert "(it takes no arguments)" in problem
+
+
+def test_closed_unevaluated_properties_keeps_names_from_alternatives():
+    schema = {"unevaluatedProperties": False, "anyOf": [{"properties": {"a": {}}}]}
+    assert _problems(_test("t", arguments={"a": 1}), tools={"t": schema}) == []
+    [problem] = _problems(_test("t", arguments={"zzz": 1}), tools={"t": schema})
+    assert "arguments.zzz" in problem
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"properties": {"a": {}}, "anyOf": [{"additionalProperties": True}]},
+        {"properties": {"a": {}}, "if": {"required": ["a"]}, "then": {"unevaluatedProperties": {}}},
+        # Draft-07 has no unevaluatedProperties: the validator ignores it.
+        {"$schema": "http://json-schema.org/draft-07/schema#", "unevaluatedProperties": False},
+        {
+            "properties": {"a": {}},
+            "allOf": [{"$dynamicRef": "#meta"}],
+            "$defs": {"m": {"$dynamicAnchor": "meta", "properties": {"zzz": {}}}},
+        },
+        {
+            "$schema": "https://json-schema.org/draft/2019-09/schema",
+            "properties": {"a": {}},
+            "allOf": [{"$recursiveRef": "#"}],
+        },
+    ],
+    ids=[
+        "open-alternative",
+        "open-condition",
+        "draft-07-unevaluated",
+        "dynamic-ref",
+        "recursive-ref",
+    ],
+)
+def test_a_construct_that_may_allow_any_name_skips_the_check(schema):
+    # is_error: only names are checked, so this isolates the name check.
+    test = _test("t", arguments={"zzz": 1})
+    # No warning either: the schema is usable, the name check simply stands aside.
+    assert check([test], {"t": schema}) == ([], [])
+
+
 _DRAFT_07 = "http://json-schema.org/draft-07/schema#"
 
 
