@@ -199,21 +199,17 @@ output schema and raises before returning, which would stop the harness from eve
 observing a schema-violating payload. An eval tool has to see what the server
 actually sent and judge it itself.
 
-## Status
+## Project status
 
-v0.1: stdio transport, three check types, pass / fail / inconclusive verdicts,
-console and JSON reports.
+v0.1.2 is the current release. mcp-assay runs a suite of tool calls against an
+MCP server over stdio and gives every test a verdict with a reason. It first
+checks the suite against the server's tool list, so a typo is refused, not graded.
 
-Known limitation: with a short `--timeout`, a test that stalls the server can make the next test grade inconclusive, because that test's request waits behind the stalled one. The fix is designed in [docs/adr/0001-recovery-after-timeout.md](docs/adr/0001-recovery-after-timeout.md) and not yet built.
+Not yet built:
 
-Roadmap:
+- Recovery after a stalled or crashed server, and a time limit on server startup.
+  Until then, with a short `--timeout`, a stalled test can make the next test
+  inconclusive. The design is in [docs/adr/0001-recovery-after-timeout.md](docs/adr/0001-recovery-after-timeout.md).
+- CI on GitHub Actions.
 
-- **Recovery:** restart a stalled or crashed server so one bad test cannot affect
-  the next (the ADR above).
-- **Server checks:** structural argument matching, fuzz suites, a security suite
-  based on the [MCPSecBench](https://arxiv.org/abs/2508.13220) taxonomy, and HTTP
-  transport.
-- **Agent task suites:** run an agent through multi-step tasks against real
-  servers and grade whether the task was completed, not only single calls.
-- **Cost tracking:** record the time each run takes and, for agent suites, the
-  model tokens it uses, so reliability can be weighed against cost.
+The roadmap is in [docs/reviews/2026-09-29-readiness-review.md](docs/reviews/2026-09-29-readiness-review.md).

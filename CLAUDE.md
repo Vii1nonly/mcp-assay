@@ -83,6 +83,10 @@ sleeps 5s, so the default 10s timeout hides it).
   reach the wire as JSON-RPC -32603. Message assertions (v0.2) are the planned fix.
 - **Known limit:** `format: regex` and `pattern` use Python `re`, so an ECMA-262-only
   pattern such as `\p{L}` can give a wrong fail.
+- **Known limit:** in draft-07 and earlier, an `additionalProperties: false` placed
+  beside a `$ref` still closes the tool for the preflight's argument-name check,
+  although those drafts ignore keywords beside `$ref`. It can only cause a clear
+  refusal (exit 2), never a wrong verdict.
 
 ## Commands
 
